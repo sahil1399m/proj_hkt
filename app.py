@@ -20,8 +20,9 @@ from history_db import (
     ensure_active_session, get_sessions, save_turn,
     start_new_chat, switch_session, delete_session, ChatSession,
 )
-from crag import stream_crag_pipeline
-from chroma_loader import ensure_chroma_downloaded
+# chroma_loader must be imported before crag so DB is ready before _get_col fires
+from chroma_loader import ensure_chroma_downloaded, get_chunk_count
+from crag import stream_crag_pipeline, _reset_col
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -51,15 +52,19 @@ def _init_state() -> None:
 
 _init_state()
 
-# ── HuggingFace ChromaDB bootstrap (runs once per cold start) ────────────────
+# ── ChromaDB bootstrap — runs once per cold start, BEFORE crag uses the DB ───
+# This MUST happen before any query hits crag.py, because crag._get_col()
+# is now lazy (no pre-warm thread) and will init on first query.
 if "chroma_ready" not in st.session_state:
-    with st.spinner("⏳ Loading knowledge base — this only happens on first launch…"):
+    with st.spinner("⏳ Loading knowledge base — first launch only…"):
         ok = ensure_chroma_downloaded()
+    if ok:
+        _reset_col()  # tell crag.py to re-init ChromaDB now that DB is on disk
     st.session_state["chroma_ready"] = ok
     if not ok:
         st.error(
             "❌ Could not load the knowledge base from HuggingFace. "
-            "Check that **HF_DATASET_REPO** is set in Streamlit secrets."
+            "Check that HF_DATASET_REPO and HF_TOKEN are set in Streamlit secrets."
         )
         st.stop()
 
@@ -612,15 +617,8 @@ with st.sidebar:
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sb-section"><div class="sb-label">Knowledge Base</div>', unsafe_allow_html=True)
-    kb_count = 0
-    if st.session_state.get("chroma_ready"):
-        try:
-            import chromadb as _cc
-            _col = _cc.PersistentClient(path=os.getenv("CHROMA_PATH", "./chroma_db")).get_collection(
-                os.getenv("CHROMA_COLLECTION", "hte_documents"))
-            kb_count = _col.count()
-        except Exception:
-            pass
+    # Use chroma_loader helper — safe, reuses existing connection
+    kb_count = get_chunk_count() if st.session_state.get("chroma_ready") else 0
 
     st.markdown(f"""
     <div class="sb-stats">
