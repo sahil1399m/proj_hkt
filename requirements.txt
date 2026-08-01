@@ -1,0 +1,60 @@
+# ── IBM Watsonx (Granite 4.0) ────────────────────────────────
+ibm-watsonx-ai==1.5.14
+
+# ── Google Gemini ─────────────────────────────────────────────
+google-generativeai
+google-genai
+langchain-google-genai
+
+# ── Groq ──────────────────────────────────────────────────────
+groq
+langchain-groq
+
+# ── Tavily ────────────────────────────────────────────────────
+tavily-python
+
+# ── LangGraph + LangChain (multi-agent pipeline) ─────────────
+langgraph
+langchain
+langchain-community
+langchain-core
+
+# ── Embeddings & Reranker ─────────────────────────────────────
+sentence-transformers
+transformers
+torch
+huggingface_hub
+
+# ── Vector Database ───────────────────────────────────────────
+chromadb
+
+# ── PDF ───────────────────────────────────────────────────────
+pypdf
+pdfplumber
+
+# ── Crawler ───────────────────────────────────────────────────
+httpx
+beautifulsoup4
+apscheduler
+
+# ── Supabase ──────────────────────────────────────────────────
+supabase
+gotrue
+
+# ── Frontend ──────────────────────────────────────────────────
+streamlit
+
+# ── Charts ────────────────────────────────────────────────────
+plotly
+
+# ── Data ──────────────────────────────────────────────────────
+pandas
+numpy
+
+# ── Environment ───────────────────────────────────────────────
+python-dotenv
+
+# ── HTTP / Auth ───────────────────────────────────────────────
+requests
+PyJWT
+psycopg2-binary
