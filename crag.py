@@ -114,7 +114,7 @@ def _get_granite():
                     model_id=IBM_MODEL_ID,
                     credentials=Credentials(api_key=IBM_API_KEY, url=IBM_URL),
                     project_id=IBM_PROJECT_ID,
-                    params={"max_tokens": 800, "temperature": 0.05},
+                    params={"max_tokens": 1200, "temperature": 0.05},
                 )
                 logger.info("IBM Granite cached")
             except Exception as exc:
@@ -415,7 +415,7 @@ def stream_groq(query: str, context: str, intent: str, conf: str) -> Generator[s
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": _build_user_msg(query, context, intent, conf)},
             ],
-            max_tokens=800, temperature=0.05, stream=True,
+            max_tokens=1000, temperature=0.05, stream=True,
         )
         for chunk in stream:
             delta = chunk.choices[0].delta.content or ""
@@ -436,7 +436,7 @@ def _generate_groq(query: str, context: str, intent: str, conf: str) -> tuple[st
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": _build_user_msg(query, context, intent, conf)},
             ],
-            max_tokens=800, temperature=0.05, stream=False,
+            max_tokens=1000, temperature=0.05, stream=False,
         )
         answer = _clean(resp.choices[0].message.content)
         return (answer, "groq-llama-3.3-70b") if answer and len(answer) > 20 else ("", "")
