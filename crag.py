@@ -90,9 +90,14 @@ def _get_ce() -> Optional[CrossEncoder]:
 
 _chroma_col = None
 _col_lock   = threading.Lock()
-
-
+ 
+ 
 def _get_col():
+    """
+    Lazy ChromaDB init — called on first query, not at import time.
+    By the time the first query arrives, ensure_chroma_downloaded()
+    has already run and the DB is fully on disk.
+    """
     global _chroma_col
     if _chroma_col is not None:
         return _chroma_col
@@ -105,9 +110,17 @@ def _get_col():
             except Exception as exc:
                 logger.error("ChromaDB init failed: %s", exc)
     return _chroma_col
-
-
-threading.Thread(target=_get_col, daemon=True).start()
+ 
+ 
+def _reset_col():
+    """
+    Force ChromaDB to re-initialise on next query.
+    Call this from app.py after ensure_chroma_downloaded() succeeds.
+    """
+    global _chroma_col
+    with _col_lock:
+        _chroma_col = None
+    logger.info("ChromaDB singleton reset — will re-init on next query")
 
 _granite_model = None
 _granite_lock  = threading.Lock()
