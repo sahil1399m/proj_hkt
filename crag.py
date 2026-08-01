@@ -1,15 +1,5 @@
 """
 crag.py — HTE CRAG Pipeline — Streaming + Parallel Optimised
-=============================================================
-Key optimisations:
-  1. No query rewriting — local intent detection (0ms)
-  2. CrossEncoder pre-warmed at import time
-  3. ChromaDB connection cached at module level
-  4. run_crag_pipeline()    — standard, returns CRAGResult
-  5. stream_crag_pipeline() — yields text tokens as they arrive
-     → User sees first word in ~2s instead of waiting 8s
-  6. Groq streaming API used — tokens arrive progressively
-  7. language_out param supported ("english"|"marathi"|"hindi")
 """
 from __future__ import annotations
 
@@ -35,7 +25,6 @@ logger = logging.getLogger(__name__)
 logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
 logging.getLogger("chromadb").setLevel(logging.WARNING)
 
-# ── Config ────────────────────────────────────────────────────────────────────
 CHROMA_PATH         = os.getenv("CHROMA_PATH", "./chroma_db")
 CHROMA_COLLECTION   = os.getenv("CHROMA_COLLECTION", "hte_documents")
 GOOGLE_API_KEY      = os.getenv("GOOGLE_API_KEY", "")
@@ -61,13 +50,8 @@ TABLE_PRIORITY_INTENTS = {
     "fees", "scholarship", "admission", "hostel", "examination", "seat"
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MODULE-LEVEL SINGLETONS — pre-warmed at import time
-# ══════════════════════════════════════════════════════════════════════════════
-
 _cross_encoder: Optional[CrossEncoder] = None
 _ce_ready = threading.Event()
-
 
 def _load_ce():
     global _cross_encoder
@@ -79,25 +63,17 @@ def _load_ce():
     finally:
         _ce_ready.set()
 
-
 threading.Thread(target=_load_ce, daemon=True).start()
-
 
 def _get_ce() -> Optional[CrossEncoder]:
     _ce_ready.wait(timeout=30)
     return _cross_encoder
 
-
+# ── FIXED: lazy init, no pre-warm thread ──────────────────────────────────────
 _chroma_col = None
 _col_lock   = threading.Lock()
- 
- 
+
 def _get_col():
-    """
-    Lazy ChromaDB init — called on first query, not at import time.
-    By the time the first query arrives, ensure_chroma_downloaded()
-    has already run and the DB is fully on disk.
-    """
     global _chroma_col
     if _chroma_col is not None:
         return _chroma_col
@@ -110,21 +86,18 @@ def _get_col():
             except Exception as exc:
                 logger.error("ChromaDB init failed: %s", exc)
     return _chroma_col
- 
- 
+
 def _reset_col():
-    """
-    Force ChromaDB to re-initialise on next query.
-    Call this from app.py after ensure_chroma_downloaded() succeeds.
-    """
+    """Force ChromaDB re-init on next query (called by app.py after HF download)."""
     global _chroma_col
     with _col_lock:
         _chroma_col = None
-    logger.info("ChromaDB singleton reset — will re-init on next query")
+    logger.info("ChromaDB singleton reset")
+
+# NO threading.Thread for _get_col — lazy init only
 
 _granite_model = None
 _granite_lock  = threading.Lock()
-
 
 def _get_granite():
     global _granite_model
@@ -148,11 +121,6 @@ def _get_granite():
                 logger.error("IBM Granite init failed: %s", exc)
     return _granite_model
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DATA CLASSES
-# ══════════════════════════════════════════════════════════════════════════════
-
 @dataclass
 class RetrievedChunk:
     content: str
@@ -165,14 +133,12 @@ class RetrievedChunk:
     language: str     = "en"
     source_type: str  = "pdf"
 
-
 @dataclass
 class WebResult:
     title: str
     url: str
     content: str
     score: float = 0.0
-
 
 @dataclass
 class CRAGResult:
@@ -184,16 +150,11 @@ class CRAGResult:
     pipeline_trace: dict[str, Any]
     translation_applied: bool = False
     translated_answer: str    = ""
-    model_used: str           = "groq-llama"
+    model_used: str           = "granite-4-h-small"
     language_out: str         = "english"
     error: Optional[str]      = None
     total_time_s: float       = 0.0
     selected_agents: list     = field(default_factory=list)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STAGE 1: LOCAL INTENT DETECTION (0ms — no LLM)
-# ══════════════════════════════════════════════════════════════════════════════
 
 _INTENT_MAP = [
     ("fees",        ["fee", "fees", "tuition", "charges", "amount", "cost", "fra", "payment", "refund"]),
@@ -208,7 +169,6 @@ _INTENT_MAP = [
     ("curriculum",  ["curriculum", "syllabus", "course", "subject", "semester"]),
 ]
 
-
 def _detect_intent(query: str) -> str:
     q = query.lower()
     for intent, keywords in _INTENT_MAP:
@@ -216,10 +176,8 @@ def _detect_intent(query: str) -> str:
             return intent
     return "general"
 
-
 def _detect_language(query: str) -> str:
     return "mr" if sum(1 for c in query if "\u0900" <= c <= "\u097f") > 2 else "en"
-
 
 def _needs_live_data(query: str) -> bool:
     q = query.lower()
@@ -227,11 +185,6 @@ def _needs_live_data(query: str) -> bool:
         "today", "current", "now", "deadline", "last date",
         "closing", "open", "status", "2025", "2026",
     ])
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STAGE 2: EMBEDDING
-# ══════════════════════════════════════════════════════════════════════════════
 
 def embed_query(text: str) -> list[float]:
     url = (
@@ -250,15 +203,9 @@ def embed_query(text: str) -> list[float]:
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read())["embedding"]["values"]
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STAGE 3: TABLE-AWARE RETRIEVAL
-# ══════════════════════════════════════════════════════════════════════════════
-
 def _make_chunk(doc: str, meta: dict, dist: float, et: str) -> RetrievedChunk:
     return RetrievedChunk(
         content=doc,
-        # YOUR chunks use 'filename' — fall back chain covers both
         source=meta.get("source") or meta.get("filename") or "Unknown",
         page=int(meta.get("page", 0)) if meta.get("page") is not None else 0,
         category=meta.get("category", ""),
@@ -268,7 +215,6 @@ def _make_chunk(doc: str, meta: dict, dist: float, et: str) -> RetrievedChunk:
         language=meta.get("language", "en"),
         source_type=meta.get("source_type", "pdf"),
     )
-
 
 def retrieve_from_chroma(embedding: list[float], intent: str) -> list[RetrievedChunk]:
     col = _get_col()
@@ -282,18 +228,11 @@ def retrieve_from_chroma(embedding: list[float], intent: str) -> list[RetrievedC
         chunks: list[RetrievedChunk] = []
         seen:   set[str] = set()
 
-        # ── Check which metadata fields actually exist in THIS collection ──
         sample = col.get(limit=1, include=["metadatas"])
         meta0  = sample["metadatas"][0] if sample["metadatas"] else {}
         has_element_type = "element_type" in meta0
         has_language     = "language" in meta0
 
-        logger.info(
-            "Collection caps: has_element_type=%s has_language=%s",
-            has_element_type, has_language,
-        )
-
-        # ── Table-priority retrieval (only if field exists) ────────────────
         if has_element_type and intent in TABLE_PRIORITY_INTENTS:
             try:
                 tr = col.query(
@@ -310,10 +249,8 @@ def retrieve_from_chroma(embedding: list[float], intent: str) -> list[RetrievedC
                         seen.add(cid)
                         chunks.append(_make_chunk(doc, meta, dist, "table"))
             except Exception as exc:
-                # Field exists but filter still failed — just skip
-                logger.warning("Table-priority query failed (skipping): %s", exc)
+                logger.warning("Table-priority query failed: %s", exc)
 
-        # ── Marathi retrieval (only if field exists) ───────────────────────
         if has_language and intent != "general":
             try:
                 mr = col.query(
@@ -331,10 +268,9 @@ def retrieve_from_chroma(embedding: list[float], intent: str) -> list[RetrievedC
                         chunks.append(_make_chunk(doc, meta, dist,
                                                   meta.get("element_type", "text")))
             except Exception as exc:
-                logger.warning("Marathi query failed (skipping): %s", exc)
+                logger.warning("Marathi query failed: %s", exc)
 
-        # ── Standard semantic retrieval for remaining slots ────────────────
-        rem = max(safe_k - len(chunks), safe_k)   # always fetch full TOP_K
+        rem = max(safe_k - len(chunks), safe_k)
         res = col.query(
             query_embeddings=[embedding],
             n_results=min(rem, total),
@@ -349,31 +285,19 @@ def retrieve_from_chroma(embedding: list[float], intent: str) -> list[RetrievedC
                 chunks.append(_make_chunk(doc, meta, dist,
                                           meta.get("element_type", "text")))
 
-        logger.info(
-            "Retrieved %d chunks (%d tables)",
-            len(chunks),
-            sum(1 for c in chunks if c.element_type == "table"),
-        )
+        logger.info("Retrieved %d chunks (%d tables)", len(chunks),
+                    sum(1 for c in chunks if c.element_type == "table"))
         return chunks
-
     except Exception as exc:
         logger.error("Retrieval error: %s", exc)
         return []
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STAGE 4: CROSSENCODER RERANKING
-# ══════════════════════════════════════════════════════════════════════════════
 
 _TABLE_KWS = {
     "fee", "fees", "tuition", "scholarship", "seat", "amount",
     "hostel", "marks", "percentage", "sc", "st", "obc", "cutoff"
 }
 
-
-def rerank_chunks(
-    query: str, chunks: list[RetrievedChunk]
-) -> tuple[list[RetrievedChunk], float]:
+def rerank_chunks(query: str, chunks: list[RetrievedChunk]) -> tuple[list[RetrievedChunk], float]:
     if not chunks:
         return [], -10.0
     chunks = chunks[:8]
@@ -386,14 +310,11 @@ def rerank_chunks(
     except Exception as exc:
         logger.error("CrossEncoder error: %s", exc)
         return chunks, -5.0
-
     is_tq = any(kw in query.lower() for kw in _TABLE_KWS)
     for chunk, score in zip(chunks, scores):
         chunk.score = score + (0.5 if chunk.element_type == "table" and is_tq else 0.0)
-
     chunks.sort(key=lambda c: c.score, reverse=True)
     return chunks, chunks[0].score
-
 
 def classify_confidence(logit: float) -> tuple[str, float]:
     norm = 1 / (1 + math.exp(-logit / 2))
@@ -402,11 +323,6 @@ def classify_confidence(logit: float) -> tuple[str, float]:
     elif logit <= INCORRECT_THRESHOLD:
         return "LOW", round(norm, 4)
     return "MEDIUM", round(norm, 4)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STAGE 5: WEB SEARCH
-# ══════════════════════════════════════════════════════════════════════════════
 
 def search_web(query: str, max_results: int = 4) -> list[WebResult]:
     if not TAVILY_API_KEY:
@@ -419,10 +335,8 @@ def search_web(query: str, max_results: int = 4) -> list[WebResult]:
             search_depth="basic", include_domains=OFFICIAL_DOMAINS,
         )
         results = [
-            WebResult(
-                title=r.get("title", ""), url=r.get("url", ""),
-                content=r.get("content", ""), score=r.get("score", 0.0),
-            )
+            WebResult(title=r.get("title", ""), url=r.get("url", ""),
+                      content=r.get("content", ""), score=r.get("score", 0.0))
             for r in resp.get("results", [])
         ]
         if len(results) < 2:
@@ -430,56 +344,31 @@ def search_web(query: str, max_results: int = 4) -> list[WebResult]:
             seen  = {r.url for r in results}
             for r in resp2.get("results", []):
                 if r.get("url", "") not in seen:
-                    results.append(WebResult(
-                        title=r.get("title", ""), url=r.get("url", ""),
-                        content=r.get("content", ""), score=r.get("score", 0.0),
-                    ))
+                    results.append(WebResult(title=r.get("title", ""), url=r.get("url", ""),
+                                             content=r.get("content", ""), score=r.get("score", 0.0)))
         logger.info("Tavily: %d results", len(results))
         return results[:max_results]
     except Exception as exc:
         logger.warning("Tavily error: %s", exc)
         return []
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STAGE 6: CONTEXT BUILDER
-# ══════════════════════════════════════════════════════════════════════════════
-
-def build_context(
-    doc_chunks: list[RetrievedChunk],
-    web_results: list[WebResult],
-    max_chars: int = 7000,
-) -> str:
+def build_context(doc_chunks: list[RetrievedChunk], web_results: list[WebResult],
+                  max_chars: int = 7000) -> str:
     parts: list[str] = []
     chars = 0
-
     for i, c in enumerate([x for x in doc_chunks if x.element_type == "table"][:3]):
         blk = f"[TABLE {i+1}] {c.source} p.{c.page} | {c.category}\n```\n{c.content}\n```\n"
-        if chars + len(blk) > max_chars:
-            break
-        parts.append(blk)
-        chars += len(blk)
-
+        if chars + len(blk) > max_chars: break
+        parts.append(blk); chars += len(blk)
     for i, c in enumerate([x for x in doc_chunks if x.element_type != "table"][:4]):
         blk = f"[DOC {i+1}] {c.source} p.{c.page} | {c.category}\n{c.content}\n"
-        if chars + len(blk) > max_chars:
-            break
-        parts.append(blk)
-        chars += len(blk)
-
+        if chars + len(blk) > max_chars: break
+        parts.append(blk); chars += len(blk)
     for i, w in enumerate(web_results[:3]):
         blk = f"[WEB {i+1}] {w.title}\nURL: {w.url}\n{w.content}\n"
-        if chars + len(blk) > max_chars:
-            break
-        parts.append(blk)
-        chars += len(blk)
-
+        if chars + len(blk) > max_chars: break
+        parts.append(blk); chars += len(blk)
     return "\n---\n".join(parts)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STAGE 7: LLM GENERATION
-# ══════════════════════════════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """You are an official AI assistant for Maharashtra's Higher & Technical Education (HTE) Department.
 
@@ -493,13 +382,11 @@ RULES — follow every rule:
 7. Start your answer directly — no preamble, no "Sure!", no "Great question!".
 8. End cleanly — no "I hope this helps"."""
 
-
 def _build_user_msg(query: str, context: str, intent: str, conf: str) -> str:
     return (
         f"Question: {query}\nIntent: {intent}\nDoc confidence: {conf}\n\n"
         f"Context from official HTE sources:\n{context}\n\nAnswer:"
     )
-
 
 def _clean(text: str) -> str:
     if not text:
@@ -511,19 +398,12 @@ def _clean(text: str) -> str:
     ]:
         c = re.sub(pat, "", text, flags=re.IGNORECASE | re.DOTALL)
         if c != text:
-            text = c.strip()
-            break
-    text = re.sub(
-        r"\n{0,3}(#{1,3}\s*)?(Sources?|References?|Citations?)\s*\n.*$",
-        "", text, flags=re.IGNORECASE | re.DOTALL,
-    )
+            text = c.strip(); break
+    text = re.sub(r"\n{0,3}(#{1,3}\s*)?(Sources?|References?|Citations?)\s*\n.*$",
+                  "", text, flags=re.IGNORECASE | re.DOTALL)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
-
-def stream_groq(
-    query: str, context: str, intent: str, conf: str
-) -> Generator[str, None, None]:
-    """Yields tokens from Groq as they arrive."""
+def stream_groq(query: str, context: str, intent: str, conf: str) -> Generator[str, None, None]:
     if not GROQ_API_KEY:
         yield "Error: GROQ_API_KEY not configured."
         return
@@ -535,9 +415,7 @@ def stream_groq(
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": _build_user_msg(query, context, intent, conf)},
             ],
-            max_tokens=800,
-            temperature=0.05,
-            stream=True,
+            max_tokens=800, temperature=0.05, stream=True,
         )
         for chunk in stream:
             delta = chunk.choices[0].delta.content or ""
@@ -546,7 +424,6 @@ def stream_groq(
     except Exception as exc:
         logger.error("Groq stream error: %s", exc)
         yield f"\n\n⚠️ Generation error: {exc}"
-
 
 def _generate_groq(query: str, context: str, intent: str, conf: str) -> tuple[str, str]:
     if not GROQ_API_KEY:
@@ -559,16 +436,13 @@ def _generate_groq(query: str, context: str, intent: str, conf: str) -> tuple[st
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": _build_user_msg(query, context, intent, conf)},
             ],
-            max_tokens=800,
-            temperature=0.05,
-            stream=False,
+            max_tokens=800, temperature=0.05, stream=False,
         )
         answer = _clean(resp.choices[0].message.content)
         return (answer, "groq-llama-3.3-70b") if answer and len(answer) > 20 else ("", "")
     except Exception as exc:
         logger.warning("Groq error: %s", exc)
         return "", ""
-
 
 def _generate_ibm(query: str, context: str, intent: str, conf: str) -> tuple[str, str]:
     model = _get_granite()
@@ -591,11 +465,6 @@ def _generate_ibm(query: str, context: str, intent: str, conf: str) -> tuple[str
             logger.warning("IBM error: %s", exc)
     return "", ""
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STAGE 8: TRANSLATION
-# ══════════════════════════════════════════════════════════════════════════════
-
 def translate_answer(answer: str, target_language: str) -> str:
     if target_language == "english" or not answer.strip():
         return ""
@@ -610,24 +479,18 @@ def translate_answer(answer: str, target_language: str) -> str:
         f"numbers, dates, proper nouns.\n\n"
         f"English:\n---\n{answer}\n---\n\n{lang_name} translation:"
     )
-
-    def _gemini(p: str) -> str:
+    def _gemini(p):
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"gemini-2.0-flash:generateContent?key={GOOGLE_API_KEY}"
         )
-        body = json.dumps({
-            "contents": [{"parts": [{"text": p}]}],
-            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2048},
-        }).encode()
-        req = urllib.request.Request(
-            url, data=body,
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
+        body = json.dumps({"contents": [{"parts": [{"text": p}]}],
+                           "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2048}}).encode()
+        req = urllib.request.Request(url, data=body,
+                                     headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.loads(r.read())["candidates"][0]["content"]["parts"][0]["text"].strip()
-
-    def _groq_tr(p: str) -> str:
+    def _groq_tr(p):
         client = Groq(api_key=GROQ_API_KEY)
         resp   = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -635,7 +498,6 @@ def translate_answer(answer: str, target_language: str) -> str:
             max_tokens=2048, temperature=0.1,
         )
         return resp.choices[0].message.content.strip()
-
     for fn in [_gemini, _groq_tr]:
         try:
             t = fn(prompt)
@@ -645,59 +507,36 @@ def translate_answer(answer: str, target_language: str) -> str:
             logger.warning("Translation via %s failed: %s", fn.__name__, exc)
     return ""
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CITATIONS
-# ══════════════════════════════════════════════════════════════════════════════
-
-def build_citations(
-    doc_chunks: list[RetrievedChunk],
-    web_results: list[WebResult],
-) -> dict:
+def build_citations(doc_chunks: list[RetrievedChunk], web_results: list[WebResult]) -> dict:
     return {
         "documents": [
-            {
-                "index": i + 1, "source": c.source, "page": c.page,
-                "category": c.category, "score": round(c.score, 3),
-                "element_type": c.element_type, "language": c.language,
-                "source_type": c.source_type,
-            }
+            {"index": i+1, "source": c.source, "page": c.page,
+             "category": c.category, "score": round(c.score, 3),
+             "element_type": c.element_type, "language": c.language,
+             "source_type": c.source_type}
             for i, c in enumerate(doc_chunks[:6])
         ],
         "web": [
-            {"index": i + 1, "title": w.title, "url": w.url, "score": round(w.score, 3)}
+            {"index": i+1, "title": w.title, "url": w.url, "score": round(w.score, 3)}
             for i, w in enumerate(web_results[:5])
         ],
     }
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PIPELINE CORE — shared retrieval used by both streaming and standard APIs
-# ══════════════════════════════════════════════════════════════════════════════
-
 def _run_retrieval(query: str) -> dict[str, Any]:
-    """
-    Runs everything up to (but not including) LLM generation.
-    Returns a dict with all retrieval state needed by both pipeline variants.
-    """
     t0     = time.time()
     intent = _detect_intent(query)
     lang   = _detect_language(query)
     live   = _needs_live_data(query)
-
     try:
         embedding = embed_query(query)
     except Exception as exc:
         logger.error("Embedding failed: %s", exc)
         return {"ok": False, "error": str(exc), "intent": intent}
-
     doc_chunks         = retrieve_from_chroma(embedding, intent)
     ranked, best_logit = rerank_chunks(query, doc_chunks)
     conf_label, conf_score = classify_confidence(best_logit)
-
     web_results: list[WebResult] = []
     used_docs = ranked
-
     if conf_label == "HIGH" and not live:
         branch = "local_docs_only"
     elif conf_label == "MEDIUM" or live:
@@ -710,64 +549,36 @@ def _run_retrieval(query: str) -> dict[str, Any]:
         if used_docs:
             conf_label = "MEDIUM"
             branch     = f"weak_docs_plus_web ({len(web_results)} results)"
-
     context = build_context(used_docs, web_results)
-
     return {
-        "ok":          True,
-        "intent":      intent,
-        "language":    lang,
-        "used_docs":   used_docs,
-        "web_results": web_results,
-        "context":     context,
-        "conf_label":  conf_label,
-        "conf_score":  conf_score,
-        "branch":      branch,
-        "retrieval_s": round(time.time() - t0, 2),
+        "ok": True, "intent": intent, "language": lang,
+        "used_docs": used_docs, "web_results": web_results,
+        "context": context, "conf_label": conf_label, "conf_score": conf_score,
+        "branch": branch, "retrieval_s": round(time.time() - t0, 2),
         "trace": {
             "query":      {"intent": intent, "language": lang, "needs_live": live},
-            "retrieval":  {
-                "chunks": len(doc_chunks),
-                "tables": sum(1 for c in doc_chunks if c.element_type == "table"),
-            },
-            "crossencoder": {
-                "best_logit":        round(best_logit, 3),
-                "confidence_label":  conf_label,
-                "confidence_score":  conf_score,
-            },
+            "retrieval":  {"chunks": len(doc_chunks),
+                           "tables": sum(1 for c in doc_chunks if c.element_type == "table")},
+            "crossencoder": {"best_logit": round(best_logit, 3),
+                             "confidence_label": conf_label, "confidence_score": conf_score},
             "corrective_branch": {"action": branch},
-            "context":    {"chars": len(context)},
+            "context": {"chars": len(context)},
         },
     }
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PUBLIC API 1: STREAMING
-# Yields tokens, then a final <<<META>>> line with JSON metadata.
-# ══════════════════════════════════════════════════════════════════════════════
 
 def stream_crag_pipeline(
     query: str,
     language_out: str = "english",
 ) -> Generator[str, None, None]:
     """
-    Streaming pipeline. Yields:
-      - "<<<STATUS>>> <json>"  — pipeline stage updates for the spinner
-      - plain text tokens      — the answer streaming in
-      - "<<<META>>> <json>"    — final metadata (confidence, citations, trace)
-
-    Usage in app.py:
-        for token in stream_crag_pipeline(query):
-            if token.startswith("<<<STATUS>>>"):
-                status = json.loads(token[len("<<<STATUS>>>"):])
-            elif token.startswith("<<<META>>>"):
-                meta = json.loads(token[len("<<<META>>>"):])
-            else:
-                answer_so_far += token
+    Streaming pipeline.
+    PRIMARY  — IBM Granite (generates full answer, yields word-by-word)
+    FALLBACK — Groq Llama  (true token streaming)
     """
-    # Stage: embedding
-    yield '<<<STATUS>>>' + json.dumps({"stage": "embedding", "msg": "Generating semantic embeddings…"})
+    import time as _st
 
+    yield '<<<STATUS>>>' + json.dumps({"stage": "embedding", "msg": "Generating semantic embeddings…"})
     r = _run_retrieval(query)
 
     if not r["ok"]:
@@ -776,21 +587,17 @@ def stream_crag_pipeline(
         yield '\n<<<META>>>' + json.dumps({"error": r.get("error")})
         return
 
-    # Emit what the retrieval stage found
-    # NOTE: build the message string OUTSIDE the f-string first — nesting an
-    # f-string with escaped quotes inside another f-string is a SyntaxError.
-    has_web = len(r["web_results"]) > 0
+    has_web       = len(r["web_results"]) > 0
     retrieved_msg = f"Found {len(r['used_docs'])} doc chunks"
     if has_web:
         retrieved_msg += f" + {len(r['web_results'])} web results"
     yield '<<<STATUS>>>' + json.dumps({"stage": "retrieved", "msg": retrieved_msg})
 
-    # Stage: LLM
-    yield '<<<STATUS>>>' + json.dumps({"stage": "generating", "msg": "LLM is generating your answer…"})
-
     context    = r["context"]
     conf_label = r["conf_label"]
     intent     = r["intent"]
+    model_used = "none"
+    full_answer: list[str] = []
 
     if not context.strip():
         yield (
@@ -799,21 +606,43 @@ def stream_crag_pipeline(
             "https://www.dtemaharashtra.gov.in"
         )
     else:
-        full_answer: list[str] = []
-        for token in stream_groq(query, context, intent, conf_label):
-            full_answer.append(token)
-            yield token
+        # ── PRIMARY: IBM Granite ──────────────────────────────────────────
+        yield '<<<STATUS>>>' + json.dumps({
+            "stage": "generating",
+            "msg":   "IBM Granite is generating your answer…"
+        })
+        ibm_answer, _ = _generate_ibm(query, context, intent, conf_label)
+
+        if ibm_answer:
+            model_used = IBM_MODEL_ID.split("/")[-1]
+            # Word-chunk streaming so the UI cursor animates
+            words = ibm_answer.split(" ")
+            for i, word in enumerate(words):
+                token = word + (" " if i < len(words) - 1 else "")
+                full_answer.append(token)
+                yield token
+                _st.sleep(0.008)
+        else:
+            # ── FALLBACK: Groq true streaming ─────────────────────────────
+            logger.warning("IBM Granite empty in stream path — falling back to Groq")
+            yield '<<<STATUS>>>' + json.dumps({
+                "stage": "generating",
+                "msg":   "Groq Llama generating answer (IBM fallback)…"
+            })
+            model_used = "groq-llama-3.3-70b"
+            for token in stream_groq(query, context, intent, conf_label):
+                full_answer.append(token)
+                yield token
 
         if not "".join(full_answer).strip():
-            answer, _ = _generate_ibm(query, context, intent, conf_label)
-            yield answer or "Unable to generate answer. Please try again."
+            yield "Unable to generate answer. Please try again."
+            model_used = "none"
 
     yield '<<<STATUS>>>' + json.dumps({"stage": "done", "msg": "Done"})
-
     meta = {
         "confidence_label": r["conf_label"],
         "confidence_score": r["conf_score"],
-        "model_used":       "groq-llama-3.3-70b",
+        "model_used":       model_used,
         "citations":        build_citations(r["used_docs"], r["web_results"]),
         "pipeline_trace":   r["trace"],
         "retrieval_s":      r["retrieval_s"],
@@ -822,22 +651,15 @@ def stream_crag_pipeline(
     yield '\n<<<META>>>' + json.dumps(meta)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PUBLIC API 2: STANDARD (non-streaming, backward-compatible)
-# ══════════════════════════════════════════════════════════════════════════════
-
 def run_crag_pipeline(
     query: str,
     language_out: str = "english",
     translate_to_marathi: bool = False,
 ) -> CRAGResult:
     t0 = time.time()
-
     if translate_to_marathi and language_out == "english":
         language_out = "marathi"
-
     r = _run_retrieval(query)
-
     if not r["ok"]:
         return CRAGResult(
             answer=f"Retrieval error: {r.get('error')}",
@@ -846,52 +668,36 @@ def run_crag_pipeline(
             pipeline_trace={"error": r.get("error")},
             error=r.get("error"),
         )
-
     context    = r["context"]
     conf_label = r["conf_label"]
     intent     = r["intent"]
-
     if not context.strip():
-        answer     = (
-            "I could not find relevant information. Please contact "
-            "Maharashtra HTE at https://www.dtemaharashtra.gov.in"
-        )
+        answer     = ("I could not find relevant information. Please contact "
+                      "Maharashtra HTE at https://www.dtemaharashtra.gov.in")
         model_used = "none"
     else:
-        # ── IBM Granite first (better RAG grounding per eval) ──────────────
+        # ── IBM Granite first ─────────────────────────────────────────────
         answer, model_used = _generate_ibm(query, context, intent, conf_label)
-
-        # ── Groq fallback if IBM fails or returns empty ────────────────────
         if not answer:
             logger.warning("IBM Granite returned empty — falling back to Groq")
             answer, model_used = _generate_groq(query, context, intent, conf_label)
-
-        # ── Last resort ────────────────────────────────────────────────────
         if not answer:
             answer     = "Unable to generate answer. Please check API keys and try again."
             model_used = "none"
-
     translated_answer   = ""
     translation_applied = False
     if language_out in ("marathi", "hindi") and answer and model_used != "none":
         translated_answer   = translate_answer(answer, language_out)
         translation_applied = bool(translated_answer)
         r["trace"]["translation"] = {"target": language_out, "applied": translation_applied}
-
     total_t = round(time.time() - t0, 2)
     r["trace"]["llm_generation"] = {"model": model_used, "chars": len(answer)}
     r["trace"]["total_time_s"]   = total_t
-
     return CRAGResult(
-        answer=answer,
-        confidence_label=conf_label,
+        answer=answer, confidence_label=conf_label,
         confidence_score=r["conf_score"],
-        doc_sources=r["used_docs"][:6],
-        web_sources=r["web_results"][:5],
-        pipeline_trace=r["trace"],
-        translation_applied=translation_applied,
-        translated_answer=translated_answer,
-        model_used=model_used,
-        language_out=language_out,
-        total_time_s=total_t,
+        doc_sources=r["used_docs"][:6], web_sources=r["web_results"][:5],
+        pipeline_trace=r["trace"], translation_applied=translation_applied,
+        translated_answer=translated_answer, model_used=model_used,
+        language_out=language_out, total_time_s=total_t,
     )
