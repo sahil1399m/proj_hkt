@@ -245,12 +245,13 @@ def embed_query(text: str) -> list[float]:
 def _make_chunk(doc: str, meta: dict, dist: float, et: str) -> RetrievedChunk:
     return RetrievedChunk(
         content=doc,
-        source=meta.get("source", meta.get("filename", "?")),
-        page=int(meta.get("page", 0)),
+        # YOUR chunks use 'filename' — fall back chain covers both
+        source=meta.get("source") or meta.get("filename") or "Unknown",
+        page=int(meta.get("page", 0)) if meta.get("page") is not None else 0,
         category=meta.get("category", ""),
         score=float(1 - dist),
-        chunk_id=meta.get("chunk_id", doc[:40]),
-        element_type=et,
+        chunk_id=meta.get("chunk_id") or meta.get("filename") or doc[:40],
+        element_type=et if et else meta.get("element_type", "text"),
         language=meta.get("language", "en"),
         source_type=meta.get("source_type", "pdf"),
     )
@@ -268,10 +269,19 @@ def retrieve_from_chroma(embedding: list[float], intent: str) -> list[RetrievedC
         chunks: list[RetrievedChunk] = []
         seen:   set[str] = set()
 
+        # ── Check which metadata fields actually exist in THIS collection ──
         sample = col.get(limit=1, include=["metadatas"])
-        has_et = bool(sample["metadatas"] and "element_type" in sample["metadatas"][0])
+        meta0  = sample["metadatas"][0] if sample["metadatas"] else {}
+        has_element_type = "element_type" in meta0
+        has_language     = "language" in meta0
 
-        if has_et and intent in TABLE_PRIORITY_INTENTS:
+        logger.info(
+            "Collection caps: has_element_type=%s has_language=%s",
+            has_element_type, has_language,
+        )
+
+        # ── Table-priority retrieval (only if field exists) ────────────────
+        if has_element_type and intent in TABLE_PRIORITY_INTENTS:
             try:
                 tr = col.query(
                     query_embeddings=[embedding],
@@ -282,14 +292,36 @@ def retrieve_from_chroma(embedding: list[float], intent: str) -> list[RetrievedC
                 for doc, meta, dist in zip(
                     tr["documents"][0], tr["metadatas"][0], tr["distances"][0]
                 ):
-                    cid = meta.get("chunk_id", doc[:40])
+                    cid = meta.get("chunk_id", meta.get("filename", doc[:40]))
                     if cid not in seen:
                         seen.add(cid)
                         chunks.append(_make_chunk(doc, meta, dist, "table"))
-            except Exception:
-                pass
+            except Exception as exc:
+                # Field exists but filter still failed — just skip
+                logger.warning("Table-priority query failed (skipping): %s", exc)
 
-        rem = max(safe_k - len(chunks), 3)
+        # ── Marathi retrieval (only if field exists) ───────────────────────
+        if has_language and intent != "general":
+            try:
+                mr = col.query(
+                    query_embeddings=[embedding],
+                    n_results=min(2, total),
+                    where={"language": {"$eq": "mr"}},
+                    include=["documents", "metadatas", "distances"],
+                )
+                for doc, meta, dist in zip(
+                    mr["documents"][0], mr["metadatas"][0], mr["distances"][0]
+                ):
+                    cid = meta.get("chunk_id", meta.get("filename", doc[:40]))
+                    if cid not in seen:
+                        seen.add(cid)
+                        chunks.append(_make_chunk(doc, meta, dist,
+                                                  meta.get("element_type", "text")))
+            except Exception as exc:
+                logger.warning("Marathi query failed (skipping): %s", exc)
+
+        # ── Standard semantic retrieval for remaining slots ────────────────
+        rem = max(safe_k - len(chunks), safe_k)   # always fetch full TOP_K
         res = col.query(
             query_embeddings=[embedding],
             n_results=min(rem, total),
@@ -298,14 +330,19 @@ def retrieve_from_chroma(embedding: list[float], intent: str) -> list[RetrievedC
         for doc, meta, dist in zip(
             res["documents"][0], res["metadatas"][0], res["distances"][0]
         ):
-            cid = meta.get("chunk_id", doc[:40])
+            cid = meta.get("chunk_id", meta.get("filename", doc[:40]))
             if cid not in seen:
                 seen.add(cid)
-                chunks.append(_make_chunk(doc, meta, dist, meta.get("element_type", "text")))
+                chunks.append(_make_chunk(doc, meta, dist,
+                                          meta.get("element_type", "text")))
 
-        logger.info("Retrieved %d chunks (%d tables)", len(chunks),
-                    sum(1 for c in chunks if c.element_type == "table"))
+        logger.info(
+            "Retrieved %d chunks (%d tables)",
+            len(chunks),
+            sum(1 for c in chunks if c.element_type == "table"),
+        )
         return chunks
+
     except Exception as exc:
         logger.error("Retrieval error: %s", exc)
         return []
