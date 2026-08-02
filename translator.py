@@ -22,9 +22,9 @@ _PRESERVE_TERMS = [
 ]
 
 
-def translate_to_marathi(text: str) -> str:
+def translate(text: str, language: str = "marathi") -> str:
     """
-    Translate English text to Marathi using Gemini.
+    Translate English text to the requested language using Gemini.
     Tries new SDK first, falls back to old SDK.
     Returns original text on failure.
     """
@@ -35,10 +35,10 @@ def translate_to_marathi(text: str) -> str:
     MAX_CHARS = 3000
     if len(text) > MAX_CHARS:
         chunks = _split_text(text, MAX_CHARS)
-        translated_chunks = [_translate_chunk(c) for c in chunks]
+        translated_chunks = [_translate_chunk(c, language) for c in chunks]
         return "\n\n".join(translated_chunks)
 
-    return _translate_chunk(text)
+    return _translate_chunk(text, language)
 
 
 def _split_text(text: str, max_chars: int) -> list[str]:
@@ -57,14 +57,14 @@ def _split_text(text: str, max_chars: int) -> list[str]:
     return chunks or [text]
 
 
-def _translate_chunk(text: str) -> str:
+def _translate_chunk(text: str, language: str = "marathi") -> str:
     """Translate a single chunk — tries new SDK then old SDK."""
     preserve_note = ", ".join(_PRESERVE_TERMS[:15])
 
-    prompt = f"""You are a professional translator. Translate the following English text to Marathi (Devanagari script).
+    prompt = f"""You are a professional translator. Translate the following English text to {language.capitalize()} (Devanagari script).
 
 STRICT RULES:
-1. Output ONLY the Marathi translation — no English, no explanation, no preamble.
+1. Output ONLY the translated text. Do not include English, explanations, headings, or any preamble.
 2. Keep these terms exactly as-is in English: {preserve_note}, and any similar education/government acronyms.
 3. Keep all numbers, percentages, fees (₹), dates, and years unchanged.
 4. Keep citation markers [DOC 1], [WEB 2] exactly as written.
@@ -74,7 +74,7 @@ STRICT RULES:
 Text to translate:
 {text}
 
-Marathi translation:"""
+{language.capitalize()} translation:"""
 
     # ── Try new google-genai SDK ──────────────────────────────────────────────
     try:
@@ -85,11 +85,11 @@ Marathi translation:"""
             contents=prompt,
         )
         result = response.text.strip() if response.text else ""
-        if result and _looks_like_marathi(result):
+        if result and _looks_like_devanagari(result):
             logger.info("Translation OK (new SDK): %d chars → %d chars", len(text), len(result))
             return result
         elif result:
-            logger.warning("Translation returned but doesn't look like Marathi — retrying with old SDK")
+            logger.warning("Translation returned but doesn't look like Devanagari — retrying with old SDK")
     except Exception as exc:
         logger.warning("New SDK translation failed: %s", exc)
 
@@ -100,10 +100,10 @@ Marathi translation:"""
         model = genai_old.GenerativeModel("gemini-2.0-flash")
         response = model.generate_content(prompt)
         result = response.text.strip() if response.text else ""
-        if result and _looks_like_marathi(result):
+        if result and _looks_like_devanagari(result):
             logger.info("Translation OK (old SDK): %d chars → %d chars", len(text), len(result))
             return result
-        logger.warning("Old SDK translation also didn't return Marathi")
+        logger.warning("Old SDK translation didn't return valid Devanagari text")
     except Exception as exc:
         logger.warning("Old SDK translation failed: %s", exc)
 
@@ -119,20 +119,24 @@ Marathi translation:"""
                     {
                         "role": "system",
                         "content": (
-                            "You are a professional English to Marathi translator. "
-                            "Output ONLY the Marathi translation in Devanagari script. "
+                            "You are a professional English translator. "
+                            "Translate to the language requested by the user. "
+                            "Output ONLY the translated text in Devanagari script. "
                             "Keep acronyms like HTE, DTE, AICTE, OBC, SC, ST, EBC, CAP, MHT-CET, "
                             "TFWS, EWS in English. Keep numbers, dates, fees unchanged. "
                             "Keep [DOC N] and [WEB N] markers unchanged."
                         ),
                     },
-                    {"role": "user", "content": f"Translate to Marathi:\n\n{text}"},
+                    {
+                        "role": "user",
+                        "content": f"Translate to {language}:\n\n{text}"
+                    },
                 ],
                 max_tokens=2048,
                 temperature=0.1,
             )
             result = response.choices[0].message.content.strip()
-            if result and _looks_like_marathi(result):
+            if result and _looks_like_devanagari(result):
                 logger.info("Translation OK (Groq fallback)")
                 return result
     except Exception as exc:
@@ -142,7 +146,7 @@ Marathi translation:"""
     return text
 
 
-def _looks_like_marathi(text: str) -> bool:
+def _looks_like_devanagari(text: str) -> bool:
     """
     Check if text contains Devanagari characters.
     Devanagari Unicode block: U+0900–U+097F
@@ -157,6 +161,12 @@ def _looks_like_marathi(text: str) -> bool:
     ratio = devanagari_count / total_alpha
     return ratio > 0.1  # at least 10% Devanagari chars
 
+def translate_to_marathi(text: str) -> str:
+    return translate(text, "marathi")
+
+
+def translate_to_hindi(text: str) -> str:
+    return translate(text, "hindi")
 
 def detect_language(text: str) -> str:
     """Detect language of input text."""
