@@ -114,7 +114,7 @@ def _get_granite():
                     model_id=IBM_MODEL_ID,
                     credentials=Credentials(api_key=IBM_API_KEY, url=IBM_URL),
                     project_id=IBM_PROJECT_ID,
-                    params={"max_tokens": 1200, "temperature": 0.05},
+                    params={"max_tokens": 800, "temperature": 0.05},
                 )
                 logger.info("IBM Granite cached")
             except Exception as exc:
@@ -357,7 +357,12 @@ def build_context(doc_chunks: list[RetrievedChunk], web_results: list[WebResult]
     parts: list[str] = []
     chars = 0
     for i, c in enumerate([x for x in doc_chunks if x.element_type == "table"][:3]):
-        blk = f"[TABLE {i+1}] {c.source} p.{c.page} | {c.category}\n```\n{c.content}\n```\n"
+        blk = (
+            f"[TABLE {i+1}] Source: {c.source} p.{c.page} | Category: {c.category}\n"
+            f">>> RENDER THIS AS A MARKDOWN TABLE <<<\n"
+            f"{c.content}\n"
+            f">>> END TABLE {i+1} <<<\n"
+        )
         if chars + len(blk) > max_chars: break
         parts.append(blk); chars += len(blk)
     for i, c in enumerate([x for x in doc_chunks if x.element_type != "table"][:4]):
@@ -372,19 +377,50 @@ def build_context(doc_chunks: list[RetrievedChunk], web_results: list[WebResult]
 
 SYSTEM_PROMPT = """You are an official AI assistant for Maharashtra's Higher & Technical Education (HTE) Department.
 
-RULES — follow every rule:
+RULES — follow every rule without exception:
+
 1. Answer ONLY from the provided context. Never invent facts.
-2. If context lacks the answer: "I could not find this in official HTE documents. Please contact the department at https://www.dtemaharashtra.gov.in"
-3. Cite sources as [TABLE N], [DOC N], or [WEB N] after every factual claim.
-4. Reproduce markdown tables from context as formatted tables — never flatten them.
-5. Quote exact numbers for fees, scholarships, seat counts, dates.
-6. Use ## headings for sections, bullet points for lists of 3+.
-7. Start your answer directly — no preamble, no "Sure!", no "Great question!".
-8. End cleanly — no "I hope this helps"."""
+
+2. If context lacks the answer say exactly:
+   "I could not find this in official HTE documents. Please contact the department at https://www.dtemaharashtra.gov.in"
+
+3. Cite sources as [TABLE N], [DOC N], or [WEB N] inline after every factual claim.
+
+4. TABLE RENDERING — CRITICAL:
+   - Every [TABLE N] block in the context MUST be reproduced as a fully formatted markdown table.
+   - Copy the exact rows and columns — do not summarise, paraphrase, or flatten into prose.
+   - If the context contains multiple tables, render ALL of them.
+   - Place the table immediately after the sentence that introduces it.
+   - Example of correct output:
+     The fee structure is as follows [TABLE 1]:
+     | Category | Tuition Fee | Other Fee |
+     |----------|-------------|-----------|
+     | Open     | ₹15,000     | ₹5,000    |
+     | SC/ST    | Nil         | ₹5,000    |
+
+5. Quote exact numbers for fees, scholarships, seat counts, dates — never round or approximate.
+
+6. Structure your answer:
+   - ## heading for each major section
+   - Bullet points for lists of 3 or more items
+   - Tables for any tabular data found in context
+   - Bold the most important numbers or deadlines
+
+7. Start your answer directly — no preamble, no "Sure!", no "Great question!", no "Certainly!".
+
+8. End cleanly — no "I hope this helps", no "Feel free to ask"."""
 
 def _build_user_msg(query: str, context: str, intent: str, conf: str) -> str:
+    # Count tables in context so model knows to expect them
+    table_count = context.count("[TABLE ")
+    table_hint = (
+        f"\n⚠️ IMPORTANT: The context below contains {table_count} table(s) marked as [TABLE N]. "
+        f"You MUST reproduce every table as a formatted markdown table in your answer. "
+        f"Do NOT flatten tables into prose or bullet points."
+        if table_count > 0 else ""
+    )
     return (
-        f"Question: {query}\nIntent: {intent}\nDoc confidence: {conf}\n\n"
+        f"Question: {query}\nIntent: {intent}\nDoc confidence: {conf}{table_hint}\n\n"
         f"Context from official HTE sources:\n{context}\n\nAnswer:"
     )
 
@@ -415,7 +451,7 @@ def stream_groq(query: str, context: str, intent: str, conf: str) -> Generator[s
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": _build_user_msg(query, context, intent, conf)},
             ],
-            max_tokens=1000, temperature=0.05, stream=True,
+            max_tokens=800, temperature=0.05, stream=True,
         )
         for chunk in stream:
             delta = chunk.choices[0].delta.content or ""
@@ -436,7 +472,7 @@ def _generate_groq(query: str, context: str, intent: str, conf: str) -> tuple[st
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": _build_user_msg(query, context, intent, conf)},
             ],
-            max_tokens=1000, temperature=0.05, stream=False,
+            max_tokens=800, temperature=0.05, stream=False,
         )
         answer = _clean(resp.choices[0].message.content)
         return (answer, "groq-llama-3.3-70b") if answer and len(answer) > 20 else ("", "")
