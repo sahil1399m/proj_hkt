@@ -18,7 +18,10 @@ from history_db import (
 )
 from chroma_loader import ensure_chroma_downloaded, get_chunk_count
 from crag import stream_crag_pipeline, _reset_col
-from translator import translate_to_marathi, translate_to_hindi
+from translator import (
+    translate_to_marathi,
+    translate_to_hindi,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -500,33 +503,37 @@ def render_message(role: str, content: str, metadata: dict[str, Any]) -> None:
     src = _sources_html(metadata)
     if src: st.markdown(src, unsafe_allow_html=True)
     if metadata.get("translation_applied") and metadata.get("translated_answer"):
-
-    lang = st.session_state.get("translate_lang", "none")
-
-    if lang == "hindi":
-        heading = "🔤 हिंदी अनुवाद"
-    elif lang == "marathi":
-        heading = "🔤 मराठी अनुवाद"
-    else:
-        heading = "🔤 Translation"
-
-    st.markdown(
-        f"""
-        <div class="marathi-box">
-            <div style="
-                font-size:11px;
-                font-weight:700;
-                letter-spacing:1px;
-                color:#34d399;
-                text-transform:uppercase;
-                margin-bottom:10px;">
-                {heading}
+        lang = st.session_state.get("translate_lang", "none")
+    
+        if lang == "hindi":
+            heading = "🔤 हिंदी अनुवाद"
+        elif lang == "marathi":
+            heading = "🔤 मराठी अनुवाद"
+        else:
+            heading = "🔤 Translation"
+    
+        st.markdown(
+            f"""
+            <div class="marathi-box">
+                <div style="
+                    font-size:11px;
+                    font-weight:700;
+                    letter-spacing:1px;
+                    color:#34d399;
+                    text-transform:uppercase;
+                    margin-bottom:10px;">
+                    {heading}
+                </div>
+                {metadata["translated_answer"]}
             </div>
-            {metadata["translated_answer"]}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.session_state.get("show_pipeline", False):
+            _render_pipeline(metadata)
+            _render_chart(metadata)
+        
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════
@@ -656,12 +663,10 @@ if ask_btn and query.strip():
     if answer:
         try:
             if lang == "marathi":
-                from translator import translate_to_marathi as _tr
-                translated_answer = _tr(answer)
+                translated_answer = translate_to_marathi(answer)
     
             elif lang == "hindi":
-                from translator import translate_to_hindi as _tr
-                translated_answer = _tr(answer)
+                translated_answer = translate_to_hindi(answer)
     
             translation_applied = bool(
                 translated_answer and translated_answer != answer
