@@ -45,6 +45,7 @@ def _init_state() -> None:
         "last_result":         None,
         "pending_query":       "",
         "crawler_started":     False,
+        "sidebar_visible":     True,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -85,97 +86,32 @@ html, body,
     color: #e4e4e7 !important;
     font-family: 'Inter', -apple-system, sans-serif !important;
 }
-/* ── Hide Streamlit chrome safely ── */
+/* ── Hide Streamlit chrome ── */
 footer                       { display: none !important; }
 [data-testid="stDecoration"] { display: none !important; }
 [data-testid="stToolbar"]    { display: none !important; }
-
-/* Make header bar itself invisible but keep it in the DOM
-   so Streamlit's sidebar toggle JS still works */
 header[data-testid="stHeader"] {
-    background:    transparent !important;
-    border-bottom: none !important;
-    height:        0px !important;
-    min-height:    0px !important;
-    overflow:      visible !important;
+    background: transparent !important;
+    border:     none !important;
 }
 
-/* ── Sidebar toggle arrow — ALL known testid variants ── */
-/* Streamlit ≤ 1.27 */
-[data-testid="stSidebarCollapsedControl"],
-[data-testid="stSidebarCollapsedControl"] button,
-/* Streamlit 1.28 – 1.35 */
-[data-testid="collapsedControl"],
-[data-testid="collapsedControl"] button,
-/* Streamlit 1.36+ */
-[data-testid="stSidebarNavToggle"],
-[data-testid="stSidebarNavToggle"] button,
-/* Generic fallback — any button inside the header */
-header[data-testid="stHeader"] button {
-    display:          flex !important;
-    visibility:       visible !important;
-    opacity:          1 !important;
-    pointer-events:   auto !important;
-    position:         fixed !important;
-    left:             0 !important;
-    top:              50vh !important;
-    z-index:          99999 !important;
-    background:       #18181b !important;
-    border:           1px solid #3f3f46 !important;
-    border-left:      none !important;
-    border-radius:    0 8px 8px 0 !important;
-    color:            #a1a1aa !important;
-    width:            24px !important;
-    height:           48px !important;
-    cursor:           pointer !important;
-}
-[data-testid="stSidebarCollapsedControl"]:hover,
-[data-testid="stSidebarCollapsedControl"] button:hover,
-[data-testid="collapsedControl"]:hover,
-[data-testid="collapsedControl"] button:hover,
-header[data-testid="stHeader"] button:hover {
-    background: #27272a !important;
-    color:      #f4f4f5 !important;
-}
-
-/* ── Sidebar itself ── */
+/* ── Sidebar ── */
 [data-testid="stSidebar"] {
     background:   #0c0c10 !important;
     border-right: 1px solid #27272a !important;
-    min-width:    260px !important;
-    max-width:    300px !important;
-    z-index:      9999 !important;
-    top:          0 !important;
-    height:       100vh !important;
-    position:     fixed !important;
 }
 [data-testid="stSidebar"] > div:first-child {
     padding:    0 !important;
     overflow-y: auto !important;
-    height:     100vh !important;
 }
-
-/* Toggles inside sidebar — force visible */
-[data-testid="stSidebar"] [data-testid="stToggle"],
-[data-testid="stSidebar"] [class*="toggle"],
-[data-testid="stSidebar"] label {
+[data-testid="stSidebar"] [data-testid="stToggle"] {
     display:    flex !important;
     visibility: visible !important;
     opacity:    1 !important;
+}
+[data-testid="stSidebar"] [data-testid="stToggle"] label {
     color:      #a1a1aa !important;
-}
-[data-testid="stSidebar"] [data-testid="stToggle"] input,
-[data-testid="stSidebar"] input[type="checkbox"] {
-    visibility:     visible !important;
-    opacity:        1 !important;
-    pointer-events: auto !important;
-}
-
-/* Main content — offset for fixed sidebar when open */
-[data-testid="stSidebar"][aria-expanded="true"] ~ 
-[data-testid="stAppViewContainer"] .block-container,
-section.main .block-container {
-    margin-left: 0 !important;
+    font-size:  13px !important;
 }
 
 .block-container {
@@ -778,50 +714,6 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════
 # MAIN CONTENT
 # ══════════════════════════════════════════════════════
-
-# ── Sidebar toggle button (pure Streamlit — works regardless of CSS) ─────────
-# This renders a ☰ button that uses JS to click Streamlit's own sidebar button
-st.markdown("""
-<script>
-function toggleSidebar() {
-    // Try all known Streamlit sidebar toggle selectors
-    const selectors = [
-        '[data-testid="stSidebarCollapsedControl"] button',
-        '[data-testid="collapsedControl"] button',
-        '[data-testid="stSidebarNavToggle"] button',
-        'header button[kind="header"]',
-        'button[aria-label="Toggle navigation"]',
-    ];
-    for (const sel of selectors) {
-        const btn = document.querySelector(sel);
-        if (btn) { btn.click(); return; }
-    }
-    // Last resort: find any button in the header
-    const headerBtns = document.querySelectorAll('header button');
-    if (headerBtns.length > 0) headerBtns[0].click();
-}
-</script>
-<button onclick="toggleSidebar()" style="
-    position: fixed;
-    left: 12px;
-    top: 50vh;
-    transform: translateY(-50%);
-    z-index: 99999;
-    background: #18181b;
-    border: 1px solid #3f3f46;
-    border-radius: 8px;
-    color: #a1a1aa;
-    width: 32px;
-    height: 48px;
-    font-size: 16px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    line-height: 1;
-    padding: 0;
-">☰</button>
-""", unsafe_allow_html=True)
 
 st.markdown(f"""
 <div class="topbar">
