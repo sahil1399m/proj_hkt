@@ -114,7 +114,7 @@ def _get_granite():
                     model_id=IBM_MODEL_ID,
                     credentials=Credentials(api_key=IBM_API_KEY, url=IBM_URL),
                     project_id=IBM_PROJECT_ID,
-                    params={"max_tokens": 1600, "temperature": 0.04},
+                    params={"max_tokens": 1600, "temperature": 0.0},
                 )
                 logger.info("IBM Granite cached")
             except Exception as exc:
