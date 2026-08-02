@@ -18,6 +18,7 @@ from history_db import (
 )
 from chroma_loader import ensure_chroma_downloaded, get_chunk_count
 from crag import stream_crag_pipeline, _reset_col
+from translator import translate_to_marathi, translate_to_hindi
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ def _init_state() -> None:
         "messages":            [],
         "active_session_id":   None,
         "show_pipeline":       False,
-        "translate_marathi":   False,
+        "translate_lang":   "none",   # "none" | "marathi" | "hindi"
         "chat_sessions_cache": None,
         "last_result":         None,
         "pending_query":       "",
@@ -238,11 +239,18 @@ with c_nc:
         st.rerun()
 
 with c_tr:
-    tr_on = st.session_state.get("translate_marathi", False)
-    if st.button(f"🔤 {'ON' if tr_on else 'Marathi'}", key="ttr",
-                 use_container_width=True, help="Toggle Marathi Translation"):
-        st.session_state["translate_marathi"] = not tr_on
-        st.rerun()
+    st.session_state["translate_lang"] = st.radio(
+        "",
+        options=["none", "marathi", "hindi"],
+        format_func=lambda x: {
+            "none": "Off",
+            "marathi": "Marathi",
+            "hindi": "Hindi",
+        }[x],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="translate_lang_radio",
+    )
 
 with c_pp:
     pp_on = st.session_state.get("show_pipeline", False)
@@ -296,12 +304,17 @@ if st.session_state.get("show_panel", False):
     st.markdown('<div class="panel-lbl">Settings</div>', unsafe_allow_html=True)
     sc1, sc2 = st.columns(2)
     with sc1:
-        new_tr = st.toggle("🔤 Marathi Translation",
-                           value=st.session_state.get("translate_marathi", False),
-                           key="panel_tr")
-        if new_tr != st.session_state.get("translate_marathi", False):
-            st.session_state["translate_marathi"] = new_tr
-            st.rerun()
+        st.session_state["translate_lang"] = st.radio(
+        "🔤 Translation",
+        options=["none", "marathi", "hindi"],
+        format_func=lambda x: {
+            "none": "Off",
+            "marathi": "Marathi",
+            "hindi": "Hindi",
+        }[x],
+        horizontal=True,
+        key="panel_translate",
+    )
     with sc2:
         new_pp = st.toggle("🔬 Pipeline Trace",
                            value=st.session_state.get("show_pipeline", False),
@@ -487,13 +500,33 @@ def render_message(role: str, content: str, metadata: dict[str, Any]) -> None:
     src = _sources_html(metadata)
     if src: st.markdown(src, unsafe_allow_html=True)
     if metadata.get("translation_applied") and metadata.get("translated_answer"):
-        st.markdown(f'<div class="marathi-box">'
-                    f'<div style="font-size:11px;font-weight:700;letter-spacing:1px;color:#34d399;'
-                    f'text-transform:uppercase;margin-bottom:10px;">🔤 मराठी अनुवाद</div>'
-                    f'{metadata["translated_answer"]}</div>', unsafe_allow_html=True)
-    if st.session_state.get("show_pipeline",False):
-        _render_pipeline(metadata); _render_chart(metadata)
-    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+    lang = st.session_state.get("translate_lang", "none")
+
+    if lang == "hindi":
+        heading = "🔤 हिंदी अनुवाद"
+    elif lang == "marathi":
+        heading = "🔤 मराठी अनुवाद"
+    else:
+        heading = "🔤 Translation"
+
+    st.markdown(
+        f"""
+        <div class="marathi-box">
+            <div style="
+                font-size:11px;
+                font-weight:700;
+                letter-spacing:1px;
+                color:#34d399;
+                text-transform:uppercase;
+                margin-bottom:10px;">
+                {heading}
+            </div>
+            {metadata["translated_answer"]}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ══════════════════════════════════════════════════════
@@ -606,15 +639,36 @@ if ask_btn and query.strip():
     user_query = query.strip()
     st.markdown(f'<div class="msg-user-wrap"><div class="msg-user">{user_query}</div></div>',
                 unsafe_allow_html=True)
-    lang_out = "marathi" if st.session_state.get("translate_marathi",False) else "english"
+    lang = st.session_state.get("translate_lang", "none")
+
+    if lang == "marathi":
+        lang_out = "marathi"
+    elif lang == "hindi":
+        lang_out = "hindi"
+    else:
+        lang_out = "english"
     answer, meta = _parse_stream(user_query, lang_out)
-    translated_answer=""; translation_applied=False
-    if st.session_state.get("translate_marathi",False) and answer:
+    translated_answer = ""
+    translation_applied = False
+
+    lang = st.session_state.get("translate_lang", "none")
+
+    if answer:
         try:
-            from translator import translate_to_marathi as _tr
-            translated_answer = _tr(answer)
-            translation_applied = bool(translated_answer and translated_answer!=answer)
-        except Exception: pass
+            if lang == "marathi":
+                from translator import translate_to_marathi as _tr
+                translated_answer = _tr(answer)
+    
+            elif lang == "hindi":
+                from translator import translate_to_hindi as _tr
+                translated_answer = _tr(answer)
+    
+            translation_applied = bool(
+                translated_answer and translated_answer != answer
+            )
+    
+        except Exception:
+            pass
     msg_meta: dict[str,Any] = {
         "confidence_label":    meta.get("confidence_label",""),
         "confidence_score":    meta.get("confidence_score",0.0),
