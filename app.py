@@ -1,11 +1,12 @@
 """
 app.py — HTE Knowledge Assistant
-Fixed: STATUS token leak, confidence threshold, clean response rendering
+Fixed: missing `import re` causing NameError in _parse_stream
 """
 from __future__ import annotations
 import json
 import logging
 import os
+import re                          # ← FIX: was missing, caused NameError on line 959
 from typing import Any
 
 import streamlit as st
@@ -554,15 +555,9 @@ if st.session_state.get("show_panel", False):
 # ══════════════════════════════════════════════════════
 
 def _conf_banner(label: str, score: float, model: str) -> str:
-    """
-    FIX: Green if score > 20%, Yellow if 10-20%, Red if < 10%.
-    Previously only showed green for HIGH label (which required logit >= -3.0).
-    Now uses actual percentage for colour decision.
-    """
     pct = int(score * 100)
     model_tag = f'<span class="conf-model">{model}</span>' if model else ""
 
-    # Colour based on actual score percentage, not just label
     if pct > 20:
         cls  = "conf-high"
         dot  = "dot-green"
@@ -739,11 +734,9 @@ def render_message(role: str, content: str, metadata: dict[str, Any]) -> None:
     conf_score = metadata.get("confidence_score", 0.0)
     model_used = metadata.get("model_used", "")
 
-    # Confidence banner
     if conf_label:
         st.markdown(_conf_banner(conf_label, conf_score, model_used), unsafe_allow_html=True)
 
-    # AI header
     model_html = "" if not model_used else f'<span class="msg-ai-model">{model_used}</span>'
     st.markdown(
         f'<div class="msg-ai-header">'
@@ -753,17 +746,14 @@ def render_message(role: str, content: str, metadata: dict[str, Any]) -> None:
         unsafe_allow_html=True,
     )
 
-    # Answer body — use st.markdown for proper rendering
     st.markdown('<div class="msg-ai-body">', unsafe_allow_html=True)
     st.markdown(content)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Sources
     src = _sources_html(metadata)
     if src:
         st.markdown(src, unsafe_allow_html=True)
 
-    # Translation
     if metadata.get("translation_applied") and metadata.get("translated_answer"):
         lang = metadata.get("lang_used", st.session_state.get("translate_lang", "none"))
         if lang == "hindi":
@@ -780,7 +770,6 @@ def render_message(role: str, content: str, metadata: dict[str, Any]) -> None:
             unsafe_allow_html=True,
         )
 
-    # Pipeline trace
     if st.session_state.get("show_pipeline", False):
         _render_pipeline(metadata)
         _render_chart(metadata)
@@ -849,23 +838,27 @@ with cb:
 
 
 # ══════════════════════════════════════════════════════
-# STREAMING  — FIX: STATUS tokens stripped before rendering
+# STREAMING — STATUS tokens stripped before rendering
 # ══════════════════════════════════════════════════════
 META_PREFIX   = "<<<META>>>"
 STATUS_PREFIX = "<<<STATUS>>>"
 
+# Pre-compile cleanup patterns (re is now imported at top of file)
+_RE_STATUS = re.compile(r'<<<STATUS>>>\{[^}]*\}')
+_RE_META   = re.compile(r'<<<META>>>\{.*$', re.DOTALL)
+
+
 def _parse_stream(user_query: str, lang_out: str):
     """
-    KEY FIX: STATUS tokens were leaking into the answer because
-    the word-chunked IBM output included STATUS text in the token stream.
-    Solution: check EVERY token for STATUS/META prefix before appending.
+    Streams tokens from stream_crag_pipeline.
+    STATUS/META control tokens are intercepted and never rendered as answer text.
     """
     full_answer_parts: list[str] = []
     meta: dict[str, Any] = {}
-    status_ph     = st.empty()
-    answer_ph     = st.empty()
-    started       = False
-    buffer        = ""   # accumulates partial tokens to catch split STATUS/META markers
+    status_ph = st.empty()
+    answer_ph = st.empty()
+    started   = False
+    buffer    = ""
 
     def _show_status(msg: str) -> None:
         status_ph.markdown(
@@ -890,11 +883,9 @@ def _parse_stream(user_query: str, lang_out: str):
 
     try:
         for raw_token in stream_crag_pipeline(user_query, language_out=lang_out):
-
-            # ── Accumulate into buffer for reliable prefix detection ──────
             buffer += raw_token
 
-            # ── META token handling ───────────────────────────────────────
+            # ── META token (end of stream, contains full metadata JSON) ──
             if META_PREFIX in buffer:
                 before, _, after = buffer.partition(META_PREFIX)
                 before = before.strip()
@@ -907,12 +898,9 @@ def _parse_stream(user_query: str, lang_out: str):
                 buffer = ""
                 continue
 
-            # ── STATUS token handling ─────────────────────────────────────
-            # Only process STATUS if buffer looks complete (ends with "}")
+            # ── STATUS token (mid-stream progress update) ─────────────────
             if STATUS_PREFIX in buffer:
-                # Extract STATUS portion
                 idx = buffer.index(STATUS_PREFIX)
-                # Keep anything before STATUS as answer text
                 before_status = buffer[:idx].strip()
                 if before_status:
                     full_answer_parts.append(before_status)
@@ -922,20 +910,18 @@ def _parse_stream(user_query: str, lang_out: str):
                     _show_streaming("".join(full_answer_parts))
 
                 rest = buffer[idx + len(STATUS_PREFIX):]
-                # Try to parse the JSON part
                 try:
                     data = json.loads(rest.strip())
                     if not started:
                         _show_status(data.get("msg", "Working…"))
                 except Exception:
-                    pass  # incomplete JSON — will be handled next iteration
+                    pass
                 buffer = ""
                 continue
 
-            # ── Regular answer token ──────────────────────────────────────
-            # Only flush buffer to answer if it doesn't start with a control prefix
-            # and doesn't look like it might be building toward one
-            if not buffer.startswith("<") and len(buffer) > 50:
+            # ── Regular answer token ─────────────────────────────────────
+            # Flush buffer once it's large enough and safe (no partial control prefix)
+            if len(buffer) > 50 and not buffer.startswith("<"):
                 if not started:
                     started = True
                     status_ph.empty()
@@ -949,15 +935,15 @@ def _parse_stream(user_query: str, lang_out: str):
         full_answer_parts = [err_msg]
         _show_streaming(err_msg, done=True)
 
-    # Flush any remaining buffer
+    # Flush any remaining buffer content
     if buffer.strip() and META_PREFIX not in buffer and STATUS_PREFIX not in buffer:
         full_answer_parts.append(buffer)
 
     answer = "".join(full_answer_parts).strip()
 
-    # Final safety: strip any leaked STATUS/META text
-    answer = re.sub(r'<<<STATUS>>>\{[^}]*\}', '', answer)
-    answer = re.sub(r'<<<META>>>\{.*$', '', answer, flags=re.DOTALL)
+    # Final safety cleanup using pre-compiled patterns (import re is at top)
+    answer = _RE_STATUS.sub('', answer)
+    answer = _RE_META.sub('', answer)
     answer = answer.strip()
 
     _show_streaming(answer, done=True)
@@ -973,12 +959,11 @@ if ask_btn and query.strip():
         unsafe_allow_html=True,
     )
 
-    lang = st.session_state.get("translate_lang", "none")
+    lang     = st.session_state.get("translate_lang", "none")
     lang_out = {"marathi": "marathi", "hindi": "hindi"}.get(lang, "english")
 
     answer, meta = _parse_stream(user_query, lang_out)
 
-    # Translation
     translated_answer   = ""
     translation_applied = False
     if answer and lang != "none":
