@@ -22,20 +22,21 @@ from history_db import (
 )
 from chroma_loader import ensure_chroma_downloaded, get_chunk_count
 
-# Safe import — if a crag.py dependency (ibm_watsonx_ai, sentence_transformers,
-# tavily, chromadb, etc.) is missing, show the real error instead of a generic
-# "ImportError" that hides the actual problem.
+# Safe import — _reset_col fetched via getattr so older deployed crag.py
+# (without _reset_col) does not crash. Only stream_crag_pipeline is required.
 try:
-    from crag import stream_crag_pipeline, _reset_col
+    import crag as _crag_module
+    stream_crag_pipeline = _crag_module.stream_crag_pipeline
+    _reset_col = getattr(_crag_module, "_reset_col", lambda: None)
 except ImportError as _crag_import_err:
-    import streamlit as _st_err
-    _st_err.error(
-        f"❌ **Dependency missing in crag.py** — install it and redeploy.\n\n"
+    import streamlit as _st_imp_err
+    _st_imp_err.error(
+        "\u274c **Cannot import crag.py** — see error below.\n\n"
         f"```\n{_crag_import_err}\n```\n\n"
-        f"Check that all packages in `requirements.txt` are installed:\n"
-        f"`sentence-transformers`, `chromadb`, `tavily-python`, `ibm-watsonx-ai`, `groq`"
+        "Ensure these are in requirements.txt:\n"
+        "sentence-transformers, chromadb, tavily-python, ibm-watsonx-ai, groq"
     )
-    _st_err.stop()
+    _st_imp_err.stop()
 
 try:
     from translator import translate_to_marathi, translate_to_hindi
@@ -860,24 +861,28 @@ with cb:
     ask_btn = st.button("Ask →", type="primary", use_container_width=True, key="ask_btn")
 
 
+
 # ══════════════════════════════════════════════════════
-# STREAMING — STATUS tokens stripped before rendering
+# STREAMING — updated for crag.py v5 API
+# stream_crag_pipeline(query) → yields tokens then <<<META>>>{json}
+# No <<<STATUS>>> tokens in v5 — spinner shown until first token arrives
 # ══════════════════════════════════════════════════════
-META_PREFIX   = "<<<META>>>"
-STATUS_PREFIX = "<<<STATUS>>>"
+META_PREFIX = "<<<META>>>"
 
-# Pre-compile cleanup patterns (re is now imported at top of file)
-_RE_STATUS = re.compile(r'<<<STATUS>>>\{[^}]*\}')
-_RE_META   = re.compile(r'<<<META>>>\{.*$', re.DOTALL)
+# Pre-compiled cleanup (re imported at top)
+_RE_META = re.compile(r'<<<META>>>.*$', re.DOTALL)
 
 
-def _parse_stream(user_query: str, lang_out: str):
+def _parse_stream(user_query: str):
     """
-    Streams tokens from stream_crag_pipeline.
-    STATUS/META control tokens are intercepted and never rendered as answer text.
+    Consumes stream_crag_pipeline(query).
+    v5 crag.py contract:
+      - yields plain text tokens  (answer)
+      - final yield: "\n<<<META>>>{json}"  (metadata)
+    Shows a spinner until the first real token arrives.
     """
     full_answer_parts: list[str] = []
-    meta: dict[str, Any] = {}
+    meta: dict[str, Any]        = {}
     status_ph = st.empty()
     answer_ph = st.empty()
     started   = False
@@ -902,13 +907,14 @@ def _parse_stream(user_query: str, lang_out: str):
             unsafe_allow_html=True,
         )
 
-    _show_status("Generating semantic embeddings…")
+    _show_status("Searching knowledge base…")
 
     try:
-        for raw_token in stream_crag_pipeline(user_query, language_out=lang_out):
+        # v5 signature: stream_crag_pipeline(query) — no language_out
+        for raw_token in stream_crag_pipeline(user_query):
             buffer += raw_token
 
-            # ── META token (end of stream, contains full metadata JSON) ──
+            # ── META token (always last in stream) ───────────────────────
             if META_PREFIX in buffer:
                 before, _, after = buffer.partition(META_PREFIX)
                 before = before.strip()
@@ -917,34 +923,12 @@ def _parse_stream(user_query: str, lang_out: str):
                 try:
                     meta = json.loads(after.strip())
                 except Exception as exc:
-                    logger.error("META parse error: %s | raw: %r", exc, after)
+                    logger.error("META parse error: %s | raw: %r", exc, after[:200])
                 buffer = ""
-                continue
+                break   # META is always last — stop iterating
 
-            # ── STATUS token (mid-stream progress update) ─────────────────
-            if STATUS_PREFIX in buffer:
-                idx = buffer.index(STATUS_PREFIX)
-                before_status = buffer[:idx].strip()
-                if before_status:
-                    full_answer_parts.append(before_status)
-                    if not started:
-                        started = True
-                        status_ph.empty()
-                    _show_streaming("".join(full_answer_parts))
-
-                rest = buffer[idx + len(STATUS_PREFIX):]
-                try:
-                    data = json.loads(rest.strip())
-                    if not started:
-                        _show_status(data.get("msg", "Working…"))
-                except Exception:
-                    pass
-                buffer = ""
-                continue
-
-            # ── Regular answer token ─────────────────────────────────────
-            # Flush buffer once it's large enough and safe (no partial control prefix)
-            if len(buffer) > 50 and not buffer.startswith("<"):
+            # ── Regular answer token — flush when buffer is big enough ───
+            if len(buffer) > 40:
                 if not started:
                     started = True
                     status_ph.empty()
@@ -958,16 +942,17 @@ def _parse_stream(user_query: str, lang_out: str):
         full_answer_parts = [err_msg]
         _show_streaming(err_msg, done=True)
 
-    # Flush any remaining buffer content
-    if buffer.strip() and META_PREFIX not in buffer and STATUS_PREFIX not in buffer:
+    # Flush any remaining buffer (small final tokens)
+    if buffer.strip() and META_PREFIX not in buffer:
         full_answer_parts.append(buffer)
 
     answer = "".join(full_answer_parts).strip()
 
-    # Final safety cleanup using pre-compiled patterns (import re is at top)
-    answer = _RE_STATUS.sub('', answer)
-    answer = _RE_META.sub('', answer)
-    answer = answer.strip()
+    # Strip any leaked META that didn't get caught above
+    answer = _RE_META.sub("", answer).strip()
+
+    if not started:
+        status_ph.empty()
 
     _show_streaming(answer, done=True)
     answer_ph.empty()
@@ -982,10 +967,10 @@ if ask_btn and query.strip():
         unsafe_allow_html=True,
     )
 
-    lang     = st.session_state.get("translate_lang", "none")
-    lang_out = {"marathi": "marathi", "hindi": "hindi"}.get(lang, "english")
+    lang = st.session_state.get("translate_lang", "none")
 
-    answer, meta = _parse_stream(user_query, lang_out)
+    # v5: no language_out param — translation handled in app.py after generation
+    answer, meta = _parse_stream(user_query)
 
     translated_answer   = ""
     translation_applied = False
