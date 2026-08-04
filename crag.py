@@ -477,7 +477,7 @@ def _stream_granite(query: str, context: str, intent: str,
             model_id=IBM_MODEL_ID,
             credentials=credentials,
             project_id=IBM_PROJECT_ID,
-            params={"max_new_tokens": 1200, "temperature": 0.05},
+            params={"max_new_tokens": 2400, "temperature": 0.05},
         )
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -524,7 +524,7 @@ def _stream_groq(query: str, context: str, intent: str,
                 {"role":"system","content":SYSTEM_PROMPT},
                 {"role":"user","content":_user_prompt(query, context, intent, conf)},
             ],
-            max_tokens=1200, temperature=0.05, stream=True,
+            max_tokens=2400, temperature=0.05, stream=True,
         )
         for chunk in stream:
             delta = chunk.choices[0].delta.content or ""
@@ -546,7 +546,7 @@ def _generate_full(query: str, context: str, intent: str,
             model = ModelInference(
                 model_id=IBM_MODEL_ID, credentials=credentials,
                 project_id=IBM_PROJECT_ID,
-                params={"max_new_tokens":1200,"temperature":0.05},
+                params={"max_new_tokens":2600,"temperature":0.05},
             )
             resp    = model.chat(messages=[
                 {"role":"system","content":SYSTEM_PROMPT},
@@ -571,7 +571,7 @@ def _generate_full(query: str, context: str, intent: str,
                     {"role":"system","content":SYSTEM_PROMPT},
                     {"role":"user","content":_user_prompt(query,context,intent,conf)},
                 ],
-                max_tokens=1200, temperature=0.05, stream=False,
+                max_tokens=2400, temperature=0.05, stream=False,
             )
             answer = _clean(resp.choices[0].message.content)
             if answer and len(answer) > 20:
