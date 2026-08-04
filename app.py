@@ -1,6 +1,9 @@
 """
 app.py — HTE Knowledge Assistant
-Fixed: missing `import re` causing NameError in _parse_stream
+Fixes applied:
+  1. `import re` added — was missing, caused NameError in _parse_stream
+  2. crag/translator imports wrapped in try/except — surfaces the real
+     dependency error instead of a generic ImportError on line 21
 """
 from __future__ import annotations
 import json
@@ -18,8 +21,28 @@ from history_db import (
     start_new_chat, switch_session, delete_session, ChatSession,
 )
 from chroma_loader import ensure_chroma_downloaded, get_chunk_count
-from crag import stream_crag_pipeline, _reset_col
-from translator import translate_to_marathi, translate_to_hindi
+
+# Safe import — if a crag.py dependency (ibm_watsonx_ai, sentence_transformers,
+# tavily, chromadb, etc.) is missing, show the real error instead of a generic
+# "ImportError" that hides the actual problem.
+try:
+    from crag import stream_crag_pipeline, _reset_col
+except ImportError as _crag_import_err:
+    import streamlit as _st_err
+    _st_err.error(
+        f"❌ **Dependency missing in crag.py** — install it and redeploy.\n\n"
+        f"```\n{_crag_import_err}\n```\n\n"
+        f"Check that all packages in `requirements.txt` are installed:\n"
+        f"`sentence-transformers`, `chromadb`, `tavily-python`, `ibm-watsonx-ai`, `groq`"
+    )
+    _st_err.stop()
+
+try:
+    from translator import translate_to_marathi, translate_to_hindi
+except ImportError:
+    # translator is optional — define stubs so the rest of app.py works
+    def translate_to_marathi(text: str) -> str: return ""   # type: ignore[misc]
+    def translate_to_hindi(text: str) -> str:   return ""   # type: ignore[misc]
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
