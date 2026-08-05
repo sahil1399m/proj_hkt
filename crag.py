@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
 logging.getLogger("chromadb").setLevel(logging.WARNING)
 
-CHROMA_PATH         = os.getenv("CHROMA_PATH", "./chroma_db")
+_raw_chroma = os.getenv("CHROMA_PATH", "./chroma_db")
+CHROMA_PATH = "/tmp/chroma_db" if (_raw_chroma.startswith("./") or not _raw_chroma.startswith("/")) else _raw_chroma
 CHROMA_COLLECTION   = os.getenv("CHROMA_COLLECTION", "hte_documents")
 GOOGLE_API_KEY      = os.getenv("GOOGLE_API_KEY", "")
 GROQ_API_KEY        = os.getenv("GROQ_API_KEY", "")
