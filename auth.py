@@ -1,6 +1,6 @@
 """
 auth.py — HTE Knowledge Assistant Authentication
-Clean Sign In / Sign Up / Logout — no feedback section
+Enhanced UI: password strength meter, animated states, polished sign-in/sign-up panels
 """
 from __future__ import annotations
 import os, time, logging
@@ -32,6 +32,7 @@ def _get_supabase() -> Client:
 def get_supabase() -> Client:
     return _get_supabase()
 
+
 @dataclass
 class UserSession:
     user_id: str
@@ -53,11 +54,13 @@ class UserSession:
         return self.email[0].upper()
 
 
+# ── Auth state helpers ─────────────────────────────────────────────────────────
+
 def _init_auth_state() -> None:
     defaults = {
-        "user_session": None,
+        "user_session":        None,
         "auth_failed_attempts": 0,
-        "auth_lockout_until": 0.0,
+        "auth_lockout_until":   0.0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -85,7 +88,7 @@ def _record_fail() -> None:
 
 def _reset_fails() -> None:
     st.session_state["auth_failed_attempts"] = 0
-    st.session_state["auth_lockout_until"] = 0.0
+    st.session_state["auth_lockout_until"]   = 0.0
 
 def _validate_password(pw: str) -> list[str]:
     errs = []
@@ -94,6 +97,18 @@ def _validate_password(pw: str) -> list[str]:
     if not any(c.islower() for c in pw): errs.append("one lowercase letter")
     if not any(c.isdigit() for c in pw): errs.append("one number")
     return errs
+
+def _password_strength(pw: str) -> tuple[int, str, str]:
+    """Returns (score 0-4, label, color)."""
+    score = 0
+    if len(pw) >= 8:                      score += 1
+    if any(c.isupper() for c in pw):      score += 1
+    if any(c.islower() for c in pw):      score += 1
+    if any(c.isdigit() for c in pw):      score += 1
+    labels = ["", "Weak", "Fair", "Good", "Strong"]
+    colors = ["", "#ef4444", "#f59e0b", "#3b82f6", "#22c55e"]
+    return score, labels[score] if score else "", colors[score] if score else "#27272a"
+
 
 def register(email: str, password: str) -> tuple[bool, str]:
     _init_auth_state()
@@ -155,12 +170,11 @@ def logout(silent: bool = False) -> None:
         st.session_state.pop(k, None)
 
 
-# ── AUTH PAGE ─────────────────────────────────────────────────────────────────
+# ── AUTH PAGE ──────────────────────────────────────────────────────────────────
 
 def render_auth_page() -> None:
     _init_auth_state()
 
-    # Try to load news
     news_items = []
     try:
         from hte_feed import get_hte_news
@@ -170,175 +184,579 @@ def render_auth_page() -> None:
 
     st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-html,body,[data-testid="stAppViewContainer"],[data-testid="stAppViewBlockContainer"]{
-    background:#09090b!important;color:#e4e4e7!important;
-    font-family:'Inter',-apple-system,sans-serif!important;
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body,
+[data-testid="stAppViewContainer"],
+[data-testid="stAppViewBlockContainer"] {
+    background: #07070a !important;
+    color: #e4e4e7 !important;
+    font-family: 'Inter', -apple-system, sans-serif !important;
 }
-#MainMenu,footer,header,[data-testid="stToolbar"],[data-testid="stDecoration"],
-[data-testid="stStatusWidget"],[data-testid="stSidebar"]{display:none!important;}
-.block-container{padding:0!important;max-width:100%!important;}
 
-/* Layout */
-.auth-grid{display:grid;grid-template-columns:1fr 420px;min-height:100vh;max-width:1100px;margin:0 auto;}
+#MainMenu, footer, header,
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+[data-testid="stSidebar"] { display: none !important; }
 
-/* Left panel */
-.auth-left{padding:48px 40px;display:flex;flex-direction:column;justify-content:space-between;}
-.brand{display:flex;align-items:center;gap:12px;margin-bottom:48px;}
-.brand-icon{width:40px;height:40px;border-radius:10px;
-    background:linear-gradient(135deg,#2563eb,#7c3aed);
-    display:flex;align-items:center;justify-content:center;font-size:20px;}
-.brand-name{font-size:17px;font-weight:600;color:#f4f4f5;}
-.brand-sub{font-size:11px;color:#52525b;margin-top:1px;}
-.left-headline{font-size:32px;font-weight:700;color:#f4f4f5;line-height:1.3;
-    letter-spacing:-0.5px;margin-bottom:16px;}
-.left-sub{font-size:14px;color:#71717a;line-height:1.7;margin-bottom:36px;}
-.feature-list{display:flex;flex-direction:column;gap:12px;margin-bottom:40px;}
-.feature-item{display:flex;align-items:center;gap:12px;font-size:13.5px;color:#a1a1aa;}
-.feature-icon{width:32px;height:32px;border-radius:8px;
-    background:#18181b;border:1px solid #27272a;
-    display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
+.block-container { padding: 0 !important; max-width: 100% !important; }
 
-/* News feed */
-.news-label{font-size:10px;text-transform:uppercase;letter-spacing:1px;
-    color:#3f3f46;font-weight:600;margin-bottom:12px;}
-.news-card{background:#111115;border:1px solid #18181b;border-radius:10px;
-    padding:14px 16px;margin-bottom:8px;cursor:pointer;text-decoration:none;
-    display:block;transition:border-color .15s;}
-.news-card:hover{border-color:#27272a;}
-.news-src{font-size:10px;color:#3f3f46;text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px;}
-.news-title{font-size:13px;font-weight:500;color:#d4d4d8;line-height:1.45;}
-.news-desc{font-size:11.5px;color:#52525b;margin-top:4px;line-height:1.5;}
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
 
-/* Right panel */
-.auth-right{background:#0c0c0f;border-left:1px solid #18181b;
-    display:flex;flex-direction:column;justify-content:center;padding:48px 44px;}
-.auth-title{font-size:24px;font-weight:700;color:#f4f4f5;letter-spacing:-.3px;margin-bottom:6px;}
-.auth-sub{font-size:13px;color:#71717a;margin-bottom:28px;line-height:1.5;}
-.auth-footer{font-size:11.5px;color:#3f3f46;text-align:center;margin-top:24px;line-height:1.6;}
+/* ── LEFT PANEL ── */
+.auth-left {
+    padding: 48px 44px 40px;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    position: relative;
+    overflow: hidden;
+}
 
-/* Inputs */
-[data-testid="stTextInput"] input{
-    background:#111115!important;border:1px solid #27272a!important;
-    border-radius:8px!important;color:#e4e4e7!important;
-    font-size:14px!important;padding:11px 14px!important;
-    font-family:'Inter',sans-serif!important;}
-[data-testid="stTextInput"] input:focus{border-color:#3b82f6!important;
-    box-shadow:0 0 0 3px rgba(59,130,246,.1)!important;}
-[data-testid="stTextInput"] label{color:#71717a!important;font-size:12px!important;font-weight:500!important;}
+/* Ambient gradient blob behind left panel */
+.auth-left::before {
+    content: '';
+    position: absolute;
+    top: -120px; left: -80px;
+    width: 480px; height: 480px;
+    background: radial-gradient(circle, rgba(37,99,235,.13) 0%, transparent 70%);
+    pointer-events: none;
+}
+.auth-left::after {
+    content: '';
+    position: absolute;
+    bottom: -60px; right: 40px;
+    width: 320px; height: 320px;
+    background: radial-gradient(circle, rgba(124,58,237,.10) 0%, transparent 70%);
+    pointer-events: none;
+}
 
-/* Buttons */
-.stButton>button{border-radius:8px!important;font-family:'Inter',sans-serif!important;font-weight:500!important;}
-.stButton>button[kind="primary"]{
-    background:linear-gradient(135deg,#2563eb,#7c3aed)!important;
-    border:none!important;color:white!important;font-size:14px!important;padding:11px!important;}
-.stButton>button[kind="primary"]:hover{opacity:.9!important;}
-.stButton>button[kind="secondary"]{background:transparent!important;
-    border:1px solid #27272a!important;color:#71717a!important;font-size:13px!important;}
-.stButton>button[kind="secondary"]:hover{background:#111115!important;color:#d4d4d8!important;}
+/* ── BRAND ── */
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 56px;
+    position: relative;
+    z-index: 1;
+}
+.brand-icon {
+    width: 44px; height: 44px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.08), 0 8px 24px rgba(37,99,235,.3);
+}
+.brand-name {
+    font-size: 16px; font-weight: 700; color: #f4f4f5;
+    letter-spacing: -.2px;
+}
+.brand-sub {
+    font-size: 11px; color: #52525b; margin-top: 2px;
+    font-weight: 400; letter-spacing: .2px;
+}
 
-/* Tabs */
-.stTabs [data-baseweb="tab-list"]{background:#111115!important;border-radius:8px!important;
-    border:1px solid #18181b!important;padding:3px!important;}
-.stTabs [data-baseweb="tab"]{color:#71717a!important;font-size:13px!important;
-    font-weight:500!important;border-radius:6px!important;padding:8px 20px!important;}
-.stTabs [aria-selected="true"]{background:#1c1c1f!important;color:#f4f4f5!important;}
-.stTabs [data-baseweb="tab-panel"]{padding:20px 0 0!important;}
+/* ── HEADLINE ── */
+.left-content { position: relative; z-index: 1; flex: 1; }
 
-[data-testid="stAlert"]{border-radius:8px!important;font-size:13px!important;}
+.left-eyebrow {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 10.5px; font-weight: 600; letter-spacing: 1.2px;
+    text-transform: uppercase; color: #3b82f6;
+    background: rgba(59,130,246,.08);
+    border: 1px solid rgba(59,130,246,.18);
+    border-radius: 20px; padding: 4px 12px;
+    margin-bottom: 20px;
+}
+.left-eyebrow-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #3b82f6;
+    animation: pulse-dot 2s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: .5; transform: scale(.7); }
+}
+
+.left-headline {
+    font-size: 36px; font-weight: 800; color: #f4f4f5;
+    line-height: 1.22; letter-spacing: -.8px; margin-bottom: 16px;
+}
+.left-headline span {
+    background: linear-gradient(135deg, #60a5fa, #a78bfa);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.left-sub {
+    font-size: 14px; color: #71717a; line-height: 1.75;
+    margin-bottom: 40px; max-width: 400px;
+}
+
+/* ── FEATURE LIST ── */
+.feature-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 44px; }
+.feature-item {
+    display: flex; align-items: flex-start; gap: 14px;
+    padding: 12px 14px;
+    background: rgba(255,255,255,.02);
+    border: 1px solid #1c1c1f;
+    border-radius: 10px;
+    transition: border-color .2s, background .2s;
+}
+.feature-item:hover {
+    border-color: #27272a;
+    background: rgba(255,255,255,.035);
+}
+.feature-icon {
+    width: 30px; height: 30px; border-radius: 7px;
+    background: #111115; border: 1px solid #27272a;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; flex-shrink: 0; margin-top: 1px;
+}
+.feature-text { flex: 1; }
+.feature-title {
+    font-size: 13px; font-weight: 500; color: #d4d4d8;
+    line-height: 1.4;
+}
+
+/* ── NEWS CARDS ── */
+.news-section { position: relative; z-index: 1; }
+.news-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px;
+    color: #3f3f46; font-weight: 600; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 8px;
+}
+.news-label::after {
+    content: ''; flex: 1; height: 1px; background: #18181b;
+}
+.news-card {
+    background: #0e0e12;
+    border: 1px solid #1c1c1f;
+    border-radius: 10px; padding: 12px 14px; margin-bottom: 8px;
+    cursor: pointer; text-decoration: none; display: block;
+    transition: border-color .18s, transform .18s, background .18s;
+}
+.news-card:hover {
+    border-color: #2563eb;
+    background: rgba(37,99,235,.04);
+    transform: translateX(3px);
+    text-decoration: none;
+}
+.news-card-inner { display: flex; gap: 10px; align-items: flex-start; }
+.news-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #2563eb; flex-shrink: 0; margin-top: 5px;
+    opacity: .6;
+}
+.news-src {
+    font-size: 9.5px; color: #3f3f46; text-transform: uppercase;
+    letter-spacing: .8px; margin-bottom: 3px; font-weight: 600;
+}
+.news-title { font-size: 12.5px; font-weight: 500; color: #d4d4d8; line-height: 1.45; }
+.news-desc  { font-size: 11px; color: #52525b; margin-top: 3px; line-height: 1.5; }
+
+/* ── RIGHT PANEL ── */
+.auth-right-wrap {
+    background: #0c0c0f;
+    border-left: 1px solid #18181b;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 48px 44px;
+    position: relative;
+    overflow: hidden;
+}
+.auth-right-wrap::before {
+    content: '';
+    position: absolute;
+    top: -200px; right: -100px;
+    width: 400px; height: 400px;
+    background: radial-gradient(circle, rgba(124,58,237,.07) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+.auth-header { margin-bottom: 28px; }
+.auth-title {
+    font-size: 26px; font-weight: 800; color: #f4f4f5;
+    letter-spacing: -.4px; margin-bottom: 6px;
+}
+.auth-sub { font-size: 13.5px; color: #71717a; line-height: 1.55; }
+
+/* ── TRUST BADGES ── */
+.trust-row {
+    display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 28px;
+}
+.trust-badge {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 10.5px; color: #52525b; font-weight: 500;
+    background: #111115; border: 1px solid #1c1c1f;
+    border-radius: 20px; padding: 4px 10px;
+}
+
+/* ── STREAMLIT TABS ── */
+.stTabs [data-baseweb="tab-list"] {
+    background: #111115 !important;
+    border-radius: 10px !important;
+    border: 1px solid #1c1c1f !important;
+    padding: 4px !important;
+    gap: 4px !important;
+}
+.stTabs [data-baseweb="tab"] {
+    color: #71717a !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    border-radius: 7px !important;
+    padding: 8px 22px !important;
+    transition: color .15s !important;
+}
+.stTabs [aria-selected="true"] {
+    background: #1c1c21 !important;
+    color: #f4f4f5 !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,.4) !important;
+}
+.stTabs [data-baseweb="tab-panel"] { padding: 22px 0 0 !important; }
+.stTabs [data-baseweb="tab-highlight"] { display: none !important; }
+
+/* ── INPUTS ── */
+[data-testid="stTextInput"] label {
+    color: #71717a !important;
+    font-size: 11.5px !important;
+    font-weight: 600 !important;
+    letter-spacing: .4px !important;
+    text-transform: uppercase !important;
+    margin-bottom: 4px !important;
+}
+[data-testid="stTextInput"] input {
+    background: #111115 !important;
+    border: 1px solid #27272a !important;
+    border-radius: 9px !important;
+    color: #e4e4e7 !important;
+    font-size: 14px !important;
+    padding: 12px 14px !important;
+    font-family: 'Inter', sans-serif !important;
+    transition: border-color .15s, box-shadow .15s !important;
+}
+[data-testid="stTextInput"] input::placeholder { color: #3f3f46 !important; }
+[data-testid="stTextInput"] input:focus {
+    border-color: #3b82f6 !important;
+    box-shadow: 0 0 0 3px rgba(59,130,246,.12) !important;
+    outline: none !important;
+}
+[data-testid="stTextInput"] input:hover:not(:focus) {
+    border-color: #3f3f46 !important;
+}
+
+/* ── BUTTONS ── */
+.stButton > button {
+    border-radius: 9px !important;
+    font-family: 'Inter', sans-serif !important;
+    font-weight: 600 !important;
+    letter-spacing: .1px !important;
+    transition: all .18s !important;
+}
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%) !important;
+    border: none !important;
+    color: white !important;
+    font-size: 14px !important;
+    padding: 12px 20px !important;
+    box-shadow: 0 4px 14px rgba(37,99,235,.25) !important;
+}
+.stButton > button[kind="primary"]:hover {
+    opacity: .92 !important;
+    box-shadow: 0 6px 20px rgba(37,99,235,.35) !important;
+    transform: translateY(-1px) !important;
+}
+.stButton > button[kind="primary"]:active {
+    transform: translateY(0) !important;
+    box-shadow: 0 2px 8px rgba(37,99,235,.2) !important;
+}
+.stButton > button[kind="secondary"] {
+    background: transparent !important;
+    border: 1px solid #27272a !important;
+    color: #71717a !important;
+    font-size: 13px !important;
+}
+.stButton > button[kind="secondary"]:hover {
+    background: #111115 !important;
+    color: #d4d4d8 !important;
+    border-color: #3f3f46 !important;
+}
+
+/* ── ALERTS ── */
+[data-testid="stAlert"] {
+    border-radius: 9px !important;
+    font-size: 13px !important;
+    font-family: 'Inter', sans-serif !important;
+}
+[data-testid="stAlert"][data-baseweb="notification"] {
+    border: none !important;
+}
+
+/* ── PASSWORD STRENGTH ── */
+.pw-strength-wrap { margin-top: -8px; margin-bottom: 12px; }
+.pw-strength-bar-bg {
+    height: 3px; background: #1c1c1f; border-radius: 2px;
+    margin-bottom: 5px; overflow: hidden;
+}
+.pw-strength-bar { height: 100%; border-radius: 2px; transition: width .3s, background .3s; }
+.pw-strength-label { font-size: 11px; font-weight: 500; }
+
+/* ── DIVIDER ── */
+.form-divider {
+    display: flex; align-items: center; gap: 12px;
+    margin: 20px 0; color: #3f3f46; font-size: 11px;
+}
+.form-divider::before, .form-divider::after {
+    content: ''; flex: 1; height: 1px; background: #1c1c1f;
+}
+
+/* ── FOOTER ── */
+.auth-footer {
+    font-size: 11px; color: #3f3f46; text-align: center;
+    margin-top: 28px; line-height: 1.8;
+    border-top: 1px solid #111115; padding-top: 20px;
+}
+.auth-footer a { color: #52525b; text-decoration: none; }
+.auth-footer a:hover { color: #71717a; }
+
+/* ── STAT ROW ── */
+.stat-row {
+    display: flex; gap: 0; margin-bottom: 44px;
+    border: 1px solid #1c1c1f; border-radius: 12px; overflow: hidden;
+}
+.stat-item {
+    flex: 1; padding: 16px 18px; position: relative;
+}
+.stat-item + .stat-item { border-left: 1px solid #1c1c1f; }
+.stat-num {
+    font-size: 22px; font-weight: 800; color: #f4f4f5;
+    letter-spacing: -.5px; line-height: 1;
+}
+.stat-num span {
+    background: linear-gradient(90deg, #60a5fa, #a78bfa);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.stat-label { font-size: 11px; color: #52525b; margin-top: 4px; font-weight: 500; }
 </style>
 """, unsafe_allow_html=True)
 
-    # Build news HTML
+    # ── Build news HTML ──────────────────────────────────────────────────────
     news_html = ""
     if news_items:
         cards = []
         for a in news_items[:4]:
-            t = a.get("title","")[:70]
-            d = a.get("description","")[:100]
-            u = a.get("url","#")
-            s = a.get("source","")
-            cards.append(f'''<a href="{u}" target="_blank" class="news-card">
-                <div class="news-src">{s}</div>
-                <div class="news-title">{t}</div>
-                {"" if not d else f'<div class="news-desc">{d}</div>'}
-            </a>''')
-        news_html = f'''<div class="news-label">📰 Latest HTE Updates</div>{"".join(cards)}'''
+            t = (a.get("title", "")[:72] + "…") if len(a.get("title", "")) > 72 else a.get("title", "")
+            d = (a.get("description", "")[:100] + "…") if len(a.get("description", "")) > 100 else a.get("description", "")
+            u = a.get("url", "#")
+            s = a.get("source", "Source")
+            cards.append(f'''
+<a href="{u}" target="_blank" class="news-card">
+    <div class="news-card-inner">
+        <div class="news-dot"></div>
+        <div>
+            <div class="news-src">{s}</div>
+            <div class="news-title">{t}</div>
+            {"" if not d else f'<div class="news-desc">{d}</div>'}
+        </div>
+    </div>
+</a>''')
+        news_html = f'''
+<div class="news-section">
+    <div class="news-label">📰 Latest HTE Updates</div>
+    {"".join(cards)}
+</div>'''
 
     features = [
         ("🔍", "Semantic search across 2,000+ official HTE documents"),
         ("📊", "Table-aware retrieval for fees, scholarships & seat matrices"),
         ("🌐", "Live web search from official Maharashtra government sites"),
-        ("🗣️", "Answers in English, Marathi and Hindi"),
+        ("🗣️",  "Answers in English, Marathi and Hindi"),
         ("📄", "Source citations with page numbers for every answer"),
     ]
     feat_html = "".join(
-        f'<div class="feature-item"><div class="feature-icon">{icon}</div>{text}</div>'
+        f'''<div class="feature-item">
+            <div class="feature-icon">{icon}</div>
+            <div class="feature-text">
+                <div class="feature-title">{text}</div>
+            </div>
+        </div>'''
         for icon, text in features
     )
 
-    col_left, col_right = st.columns([1.1, 1])
+    col_left, col_right = st.columns([1.15, 1])
 
+    # ── LEFT COLUMN ─────────────────────────────────────────────────────────
     with col_left:
         st.markdown(f"""
-        <div class="auth-left">
-            <div>
-                <div class="brand">
-                    <div class="brand-icon">🏛️</div>
-                    <div>
-                        <div class="brand-name">HTE Knowledge Assistant</div>
-                        <div class="brand-sub">Maharashtra Higher &amp; Technical Education</div>
-                    </div>
-                </div>
-                <div class="left-headline">Instant answers from<br>official HTE documents</div>
-                <div class="left-sub">
-                    AI-powered document intelligence for government officers,
-                    students and administrators — grounded in official GRs,
-                    circulars and brochures.
-                </div>
-                <div class="feature-list">{feat_html}</div>
-                {news_html}
+<div class="auth-left">
+    <div class="brand">
+        <div class="brand-icon">🏛️</div>
+        <div>
+            <div class="brand-name">HTE Knowledge Assistant</div>
+            <div class="brand-sub">Maharashtra Higher &amp; Technical Education</div>
+        </div>
+    </div>
+
+    <div class="left-content">
+        <div class="left-eyebrow">
+            <div class="left-eyebrow-dot"></div>
+            AI-Powered · Official Sources Only
+        </div>
+
+        <div class="left-headline">
+            Instant answers from<br><span>official HTE documents</span>
+        </div>
+
+        <div class="left-sub">
+            AI document intelligence for government officers, students and
+            administrators — grounded in verified GRs, circulars and brochures.
+            No hallucinations. Always cited.
+        </div>
+
+        <div class="stat-row">
+            <div class="stat-item">
+                <div class="stat-num"><span>2,000+</span></div>
+                <div class="stat-label">Official documents</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-num"><span>3</span></div>
+                <div class="stat-label">Languages supported</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-num"><span>100%</span></div>
+                <div class="stat-label">Source-cited answers</div>
             </div>
         </div>
-        """, unsafe_allow_html=True)
 
+        <div class="feature-list">{feat_html}</div>
+
+        {news_html}
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+    # ── RIGHT COLUMN ─────────────────────────────────────────────────────────
     with col_right:
         st.markdown("""
-        <div style="padding:40px 8px 8px;">
-            <div class="auth-title">Welcome back 👋</div>
-            <div class="auth-sub">Sign in to access the HTE Knowledge Assistant</div>
-        </div>
-        """, unsafe_allow_html=True)
+<div class="auth-right-wrap">
+    <div class="auth-header">
+        <div class="auth-title">Welcome back 👋</div>
+        <div class="auth-sub">Sign in to access the HTE Knowledge Assistant</div>
+    </div>
+    <div class="trust-row">
+        <span class="trust-badge">🔒 Secure · Supabase Auth</span>
+        <span class="trust-badge">✅ Verified government data</span>
+        <span class="trust-badge">🏛️ Maharashtra Govt</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-        tab_in, tab_reg = st.tabs(["Sign In", "Create Account"])
+        tab_in, tab_reg = st.tabs(["  Sign In  ", "  Create Account  "])
 
+        # ── SIGN IN TAB ──────────────────────────────────────────────────
         with tab_in:
             with st.form("lf", clear_on_submit=False):
-                em = st.text_input("Email address", placeholder="you@example.com", key="l_em")
-                pw = st.text_input("Password", type="password", placeholder="••••••••", key="l_pw")
-                sb = st.form_submit_button("Sign In →", type="primary", use_container_width=True)
+                em = st.text_input(
+                    "Email address",
+                    placeholder="you@example.com",
+                    key="l_em",
+                )
+                pw = st.text_input(
+                    "Password",
+                    type="password",
+                    placeholder="Enter your password",
+                    key="l_pw",
+                )
+                sb = st.form_submit_button(
+                    "Sign In →",
+                    type="primary",
+                    use_container_width=True,
+                )
+
             if sb:
                 if _is_locked_out():
-                    st.error(f"Locked out. Try in {int(st.session_state['auth_lockout_until']-time.time())}s.")
+                    remaining = int(st.session_state["auth_lockout_until"] - time.time())
+                    st.error(f"🔒 Account locked. Try again in {remaining}s.")
                 else:
-                    with st.spinner("Signing in…"):
+                    with st.spinner("Verifying credentials…"):
                         ok, msg = login(em, pw)
-                    if ok: st.rerun()
-                    else: st.error(msg)
+                    if ok:
+                        st.rerun()
+                    else:
+                        attempts_left = MAX_FAILED_ATTEMPTS - st.session_state["auth_failed_attempts"]
+                        st.error(f"⚠️ {msg}" + (f"  ·  {attempts_left} attempt(s) remaining" if attempts_left < MAX_FAILED_ATTEMPTS else ""))
 
+        # ── CREATE ACCOUNT TAB ───────────────────────────────────────────
         with tab_reg:
-            with st.form("rf", clear_on_submit=True):
-                r_em  = st.text_input("Email address",   placeholder="you@example.com",                    key="r_em")
-                r_pw  = st.text_input("Password",         type="password", placeholder="Min 8 chars · upper · lower · number", key="r_pw")
-                r_pw2 = st.text_input("Confirm password", type="password", placeholder="Repeat password",   key="r_pw2")
-                r_sb  = st.form_submit_button("Create Account →", type="primary", use_container_width=True)
-            if r_sb:
-                if r_pw != r_pw2: st.error("Passwords do not match.")
-                else:
-                    with st.spinner("Creating account…"):
-                        ok, msg = register(r_em, r_pw)
-                    if ok: st.rerun()
-                    else: st.error(msg)
+            r_pw_live = st.text_input(
+                "Password",
+                type="password",
+                placeholder="Min 8 chars · uppercase · number",
+                key="r_pw_preview",
+                label_visibility="collapsed",
+            )
 
-        st.markdown('<div class="auth-footer">Official government knowledge base · No hallucinations<br>Grounded in verified HTE documents</div>', unsafe_allow_html=True)
+            # Live password strength indicator
+            if r_pw_live:
+                score, label, color = _password_strength(r_pw_live)
+                bar_pct = score * 25
+                st.markdown(f"""
+<div class="pw-strength-wrap">
+    <div class="pw-strength-bar-bg">
+        <div class="pw-strength-bar" style="width:{bar_pct}%;background:{color};"></div>
+    </div>
+    <div class="pw-strength-label" style="color:{color};">{label}</div>
+</div>
+""", unsafe_allow_html=True)
+
+            with st.form("rf", clear_on_submit=True):
+                r_em  = st.text_input(
+                    "Email address",
+                    placeholder="you@example.com",
+                    key="r_em",
+                )
+                r_pw  = st.text_input(
+                    "Password",
+                    type="password",
+                    placeholder="Min 8 chars · uppercase · number",
+                    key="r_pw",
+                )
+                r_pw2 = st.text_input(
+                    "Confirm password",
+                    type="password",
+                    placeholder="Repeat your password",
+                    key="r_pw2",
+                )
+                r_sb  = st.form_submit_button(
+                    "Create Account →",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            if r_sb:
+                if r_pw != r_pw2:
+                    st.error("⚠️ Passwords do not match.")
+                else:
+                    with st.spinner("Creating your account…"):
+                        ok, msg = register(r_em, r_pw)
+                    if ok:
+                        st.rerun()
+                    else:
+                        st.error(f"⚠️ {msg}")
+
+        st.markdown("""
+<div class="auth-footer">
+    🔐 Your data is encrypted and stored securely<br>
+    Official government knowledge base · No hallucinations<br>
+    Grounded in verified HTE documents only
+</div>
+""", unsafe_allow_html=True)
