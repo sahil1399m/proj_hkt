@@ -122,7 +122,7 @@ def _get_granite():
                     model_id=IBM_MODEL_ID,
                     credentials=Credentials(api_key=IBM_API_KEY, url=IBM_URL),
                     project_id=IBM_PROJECT_ID,
-                    params={"max_tokens": 1600, "temperature": 0.0},
+                    params={"max_tokens": 2400, "temperature": 0.0},
                 )
                 logger.info("IBM Granite cached")
             except Exception as exc:
@@ -519,7 +519,7 @@ def stream_groq(query: str, context: str, intent: str, conf: str) -> Generator[s
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": _build_user_msg(query, context, intent, conf)},
             ],
-            max_tokens=1600, temperature=0.05, stream=True,
+            max_tokens=2400, temperature=0.05, stream=True,
         )
         for chunk in stream:
             delta = chunk.choices[0].delta.content or ""
