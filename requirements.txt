@@ -1,60 +1,57 @@
-# ── IBM Watsonx (Granite 4.0) ────────────────────────────────
-ibm-watsonx-ai==1.5.14
+# ── IBM Watsonx ──────────────────────────────────────────────
+ibm-watsonx-ai==1.1.14
+ibm-cloud-sdk-core==3.20.1
 
 # ── Google Gemini ─────────────────────────────────────────────
-google-generativeai
-google-genai
-langchain-google-genai
+google-generativeai==0.8.3
+google-genai==1.0.0
 
 # ── Groq ──────────────────────────────────────────────────────
-groq
-langchain-groq
+groq==0.11.0
 
 # ── Tavily ────────────────────────────────────────────────────
-tavily-python
+tavily-python==0.5.0
 
-# ── LangGraph + LangChain (multi-agent pipeline) ─────────────
-langgraph
-langchain
-langchain-community
-langchain-core
+# ── LangChain ─────────────────────────────────────────────────
+langchain==0.3.7
+langchain-community==0.3.7
+langchain-core==0.3.15
+langchain-google-genai==2.0.5
+langchain-groq==0.2.1
+langgraph==0.2.45
 
 # ── Embeddings & Reranker ─────────────────────────────────────
-sentence-transformers
-transformers
-torch
-huggingface_hub
+sentence-transformers==3.3.1
+transformers==4.46.3
+torch==2.5.1
+huggingface_hub==0.26.5
 
 # ── Vector Database ───────────────────────────────────────────
-chromadb
+chromadb==0.5.23
 
 # ── PDF ───────────────────────────────────────────────────────
-pypdf
-pdfplumber
+pypdf==5.1.0
+pdfplumber==0.11.4
 
 # ── Crawler ───────────────────────────────────────────────────
-httpx
-beautifulsoup4
-apscheduler
+httpx==0.27.2
+beautifulsoup4==4.12.3
+apscheduler==3.10.4
 
 # ── Supabase ──────────────────────────────────────────────────
-supabase
-gotrue
+supabase==2.10.0
+gotrue==2.9.0
 
 # ── Frontend ──────────────────────────────────────────────────
-streamlit
-
-# ── Charts ────────────────────────────────────────────────────
-plotly
+streamlit==1.41.1
+plotly==5.24.1
 
 # ── Data ──────────────────────────────────────────────────────
-pandas
-numpy
+pandas==2.2.3
+numpy==1.26.4
 
-# ── Environment ───────────────────────────────────────────────
-python-dotenv
-
-# ── HTTP / Auth ───────────────────────────────────────────────
-requests
-PyJWT
-psycopg2-binary
+# ── Environment / Auth ────────────────────────────────────────
+python-dotenv==1.0.1
+requests==2.32.3
+PyJWT==2.10.1
+psycopg2-binary==2.9.10
