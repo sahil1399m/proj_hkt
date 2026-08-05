@@ -652,13 +652,13 @@ def stream_crag_pipeline(
 
         if ibm_answer:
             model_used = IBM_MODEL_ID.split("/")[-1]
-            # Word-chunk streaming so the UI cursor animates
-            words = ibm_answer.split(" ")
-            for i, word in enumerate(words):
-                token = word + (" " if i < len(words) - 1 else "")
+            # Yield in ~8-word chunks — fast enough to animate, no sleep needed
+            words  = ibm_answer.split(" ")
+            CHUNK  = 8
+            for i in range(0, len(words), CHUNK):
+                token = " ".join(words[i:i+CHUNK]) + " "
                 full_answer.append(token)
                 yield token
-                _st.sleep(0.008)
         else:
             # ── FALLBACK: Groq true streaming ─────────────────────────────
             logger.warning("IBM Granite empty in stream path — falling back to Groq")
