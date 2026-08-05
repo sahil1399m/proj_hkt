@@ -1,6 +1,6 @@
 """
 app.py — HTE Knowledge Assistant
-Controls in top bar — no sidebar dependency
+Controls in top bar — streaming output via st.write_stream
 """
 from __future__ import annotations
 import json
@@ -18,10 +18,7 @@ from history_db import (
 )
 from chroma_loader import ensure_chroma_downloaded, get_chunk_count
 from crag import stream_crag_pipeline, _reset_col
-from translator import (
-    translate_to_marathi,
-    translate_to_hindi,
-)
+from translator import translate_to_marathi, translate_to_hindi
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,12 +30,13 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# ── Init state ────────────────────────────────────────────────────────────────
 def _init_state() -> None:
     defaults = {
         "messages":            [],
         "active_session_id":   None,
         "show_pipeline":       False,
-        "translate_lang":   "none",   # "none" | "marathi" | "hindi"
+        "translate_lang":      "none",
         "chat_sessions_cache": None,
         "last_result":         None,
         "pending_query":       "",
@@ -51,16 +49,18 @@ def _init_state() -> None:
 
 _init_state()
 
+# ── ChromaDB bootstrap ────────────────────────────────────────────────────────
 if "chroma_ready" not in st.session_state:
-    with st.spinner("Loading knowledge base…"):
+    with st.spinner("⏳ Loading knowledge base — first launch only…"):
         ok = ensure_chroma_downloaded()
     if ok:
         _reset_col()
     st.session_state["chroma_ready"] = ok
     if not ok:
-        st.error("Could not load knowledge base. Check HF_DATASET_REPO in secrets.")
+        st.error("❌ Could not load knowledge base. Check HF_DATASET_REPO in secrets.")
         st.stop()
 
+# ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -71,24 +71,19 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stAppViewBlockContain
 footer,[data-testid="stDecoration"],[data-testid="stToolbar"],
 header[data-testid="stHeader"],[data-testid="stSidebar"]{display:none!important;}
 .block-container{max-width:900px!important;padding:1.5rem 1.5rem 8rem!important;margin:0 auto!important;}
-/* Top bar buttons */
-.stButton>button{
-    background:#18181b!important;border:1px solid #27272a!important;
-    color:#a1a1aa!important;border-radius:8px!important;
-    font-size:12px!important;font-weight:500!important;transition:all 0.15s!important;}
+.stButton>button{background:#18181b!important;border:1px solid #27272a!important;
+    color:#a1a1aa!important;border-radius:8px!important;font-size:12px!important;
+    font-weight:500!important;transition:all 0.15s!important;}
 .stButton>button:hover{background:#27272a!important;color:#f4f4f5!important;border-color:#3f3f46!important;}
-.stButton>button[kind="primary"]{
-    background:linear-gradient(135deg,#3b82f6 0%,#8b5cf6 100%)!important;
+.stButton>button[kind="primary"]{background:linear-gradient(135deg,#3b82f6 0%,#8b5cf6 100%)!important;
     border:none!important;color:white!important;border-radius:12px!important;
     min-height:60px!important;font-weight:700!important;font-size:15px!important;}
 .stButton>button[kind="primary"]:hover{opacity:0.92!important;transform:translateY(-1px)!important;}
-.stButton>button[kind="secondary"]{
-    background:#18181b!important;border:1px solid #27272a!important;
+.stButton>button[kind="secondary"]{background:#18181b!important;border:1px solid #27272a!important;
     color:#a1a1aa!important;border-radius:10px!important;padding:12px 14px!important;
     min-height:60px!important;text-align:left!important;font-size:13px!important;
     font-weight:500!important;transition:all 0.18s!important;}
 .stButton>button[kind="secondary"]:hover{background:#27272a!important;color:#f4f4f5!important;}
-/* Panel */
 .panel-box{background:#0c0c10;border:1px solid #27272a;border-radius:14px;padding:20px;margin-bottom:20px;}
 .panel-lbl{font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#3f3f46;margin:14px 0 8px;}
 .panel-lbl:first-child{margin-top:0;}
@@ -109,7 +104,6 @@ header[data-testid="stHeader"],[data-testid="stSidebar"]{display:none!important;
 .hist-item.active{background:#1e2a3d;border-color:#2d4a70;color:#93c5fd;}
 .hist-item.active .hist-dot{background:#3b82f6;}
 .hist-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
-/* Messages */
 .msg-user-wrap{display:flex;justify-content:flex-end;margin:28px 0 8px;}
 .msg-user{background:#1e293b;border:1px solid #2d4a70;border-radius:18px 18px 4px 18px;
     padding:14px 20px;max-width:82%;color:#e2e8f0;font-size:15px;line-height:1.65;}
@@ -120,7 +114,7 @@ header[data-testid="stHeader"],[data-testid="stSidebar"]{display:none!important;
 .msg-ai-name{font-size:13px;color:#71717a;font-weight:600;}
 .msg-ai-model{font-size:10.5px;color:#3f3f46;font-family:'JetBrains Mono',monospace;
     background:#18181b;border:1px solid #27272a;border-radius:4px;padding:2px 7px;}
-.msg-ai-body{font-size:15px;line-height:1.78;color:#d4d4d8;padding-left:40px;}
+.msg-ai-body{font-size:15px;line-height:1.78;color:#d4d4d8;}
 .msg-ai-body h1,.msg-ai-body h2{font-size:17px;font-weight:700;color:#f4f4f5;
     margin:20px 0 10px;padding-bottom:6px;border-bottom:1px solid #27272a;}
 .msg-ai-body h3{font-size:15px;font-weight:600;color:#e4e4e7;margin:16px 0 8px;}
@@ -137,7 +131,6 @@ header[data-testid="stHeader"],[data-testid="stSidebar"]{display:none!important;
 .msg-ai-body td{padding:9px 14px;border:1px solid #1f1f22;color:#d4d4d8;vertical-align:top;}
 .msg-ai-body tr:nth-child(even) td{background:#0f0f12;}
 .msg-ai-body tr:hover td{background:#18181b;}
-/* Confidence */
 .conf-banner{display:flex;align-items:center;gap:10px;padding:10px 16px;border-radius:8px;
     font-size:12.5px;font-weight:500;margin-bottom:14px;}
 .conf-high{background:#071510;border:1px solid #065f46;color:#34d399;}
@@ -147,8 +140,7 @@ header[data-testid="stHeader"],[data-testid="stSidebar"]{display:none!important;
 .dot-green{background:#34d399;box-shadow:0 0 6px rgba(52,211,153,0.5);}
 .dot-yellow{background:#fbbf24;box-shadow:0 0 6px rgba(251,191,36,0.5);}
 .dot-red{background:#f87171;box-shadow:0 0 6px rgba(248,113,113,0.5);}
-/* Sources */
-.src-wrap{margin:18px 0 0 40px;background:#0c0c10;border:1px solid #18181b;border-radius:10px;padding:16px;}
+.src-wrap{margin:18px 0 0 0;background:#0c0c10;border:1px solid #18181b;border-radius:10px;padding:16px;}
 .src-lbl{font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:#3f3f46;font-weight:700;margin-bottom:10px;}
 .src-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:7px;}
 .src-d,.src-t,.src-w{display:flex;align-items:flex-start;gap:9px;padding:9px 12px;
@@ -162,17 +154,13 @@ header[data-testid="stHeader"],[data-testid="stSidebar"]{display:none!important;
 .src-name{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .src-d .src-name{color:#60a5fa;}.src-t .src-name{color:#34d399;}.src-w .src-name{color:#a1a1aa;}
 .src-meta{font-size:10.5px;color:#3f3f46;margin-top:2px;font-family:'JetBrains Mono',monospace;}
-/* Loading */
-.loading-wrap{background:#0c0c10;border:1px solid #18181b;border-radius:14px;padding:16px 20px;margin:8px 0 16px;}
-.loading-row{display:flex;align-items:center;gap:12px;}
-.loading-msg{font-size:13px;color:#d4d4d8;font-weight:500;}
-.spinner{width:15px;height:15px;border:2px solid #27272a;border-top-color:#60a5fa;
-    border-radius:50%;display:inline-block;flex-shrink:0;animation:spin 0.7s linear infinite;}
+/* Status spinner */
+.status-box{display:flex;align-items:center;gap:12px;padding:14px 18px;
+    background:#0c0c10;border:1px solid #18181b;border-radius:12px;margin:8px 0;}
+.status-spinner{width:16px;height:16px;border:2px solid #27272a;border-top-color:#60a5fa;
+    border-radius:50%;flex-shrink:0;animation:spin 0.7s linear infinite;}
+.status-msg{font-size:13px;color:#a1a1aa;font-weight:500;}
 @keyframes spin{to{transform:rotate(360deg);}}
-.stream-cursor{display:inline-block;width:8px;height:16px;background:#60a5fa;
-    margin-left:2px;vertical-align:text-bottom;animation:blink 0.9s steps(1) infinite;}
-@keyframes blink{50%{opacity:0;}}
-/* Input */
 [data-testid="stTextArea"] textarea{background:#18181b!important;border:1px solid #27272a!important;
     border-radius:12px!important;color:#f4f4f5!important;font-size:15px!important;
     padding:16px!important;line-height:1.55!important;resize:none!important;}
@@ -180,12 +168,12 @@ header[data-testid="stHeader"],[data-testid="stSidebar"]{display:none!important;
 [data-testid="stTextArea"] textarea::placeholder{color:#3f3f46!important;}
 [data-testid="stHorizontalBlock"]{align-items:flex-end!important;}
 [data-testid="stExpander"]{border:1px solid #18181b!important;border-radius:8px!important;
-    background:#0c0c10!important;margin:6px 0 6px 40px!important;}
+    background:#0c0c10!important;margin:6px 0!important;}
 [data-testid="stExpander"] summary{font-size:12px!important;color:#52525b!important;padding:8px 14px!important;}
 [data-testid="stToggle"] label{color:#a1a1aa!important;font-size:13px!important;}
 hr{border-color:#18181b!important;margin:12px 0!important;}
 .marathi-box{background:#071510;border:1px solid #065f46;border-left:3px solid #34d399;
-    border-radius:0 10px 10px 10px;padding:16px 20px;margin:14px 0 0 40px;
+    border-radius:0 10px 10px 10px;padding:16px 20px;margin:14px 0 0 0;
     font-size:15px;line-height:1.9;color:#86efac;}
 .welcome-wrap{padding:48px 0 32px;text-align:center;}
 .welcome-icon-wrap{width:68px;height:68px;border-radius:18px;margin:0 auto 20px;
@@ -196,9 +184,12 @@ hr{border-color:#18181b!important;margin:12px 0!important;}
 .chips-label{font-size:11px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#3f3f46;margin-bottom:16px;}
 .topbar-avatar{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);
     display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:white;}
+/* st.write_stream container override */
+[data-testid="stChatMessage"]{background:transparent!important;border:none!important;}
 </style>
 """, unsafe_allow_html=True)
 
+# ── Crawler ───────────────────────────────────────────────────────────────────
 if not st.session_state["crawler_started"]:
     try:
         from crawler import start_scheduler
@@ -207,6 +198,7 @@ if not st.session_state["crawler_started"]:
         pass
     st.session_state["crawler_started"] = True
 
+# ── Auth ──────────────────────────────────────────────────────────────────────
 if not is_authenticated():
     render_auth_page()
     st.stop()
@@ -243,16 +235,9 @@ with c_nc:
 
 with c_tr:
     st.session_state["translate_lang"] = st.radio(
-        "",
-        options=["none", "marathi", "hindi"],
-        format_func=lambda x: {
-            "none": "Off",
-            "marathi": "Marathi",
-            "hindi": "Hindi",
-        }[x],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="translate_lang_radio",
+        "", options=["none", "marathi", "hindi"],
+        format_func=lambda x: {"none": "Off", "marathi": "Marathi", "hindi": "Hindi"}[x],
+        horizontal=True, label_visibility="collapsed", key="translate_lang_radio",
     )
 
 with c_pp:
@@ -283,50 +268,34 @@ st.markdown("<hr>", unsafe_allow_html=True)
 # ══════════════════════════════════════════════════════
 if st.session_state.get("show_panel", False):
     st.markdown('<div class="panel-box">', unsafe_allow_html=True)
-
-    # Stats
     st.markdown('<div class="panel-lbl">Knowledge Base</div>', unsafe_allow_html=True)
     st.markdown(f"""
     <div class="pstat-row">
       <div class="pstat"><div class="pstat-val">{kb_count:,}</div><div class="pstat-key">Chunks indexed</div></div>
       <div class="pstat"><div class="pstat-val">{len(sessions)}</div><div class="pstat-key">Your chats</div></div>
     </div>""", unsafe_allow_html=True)
-
-    # AI Stack
     st.markdown('<div class="panel-lbl">AI Stack</div>', unsafe_allow_html=True)
-    st.markdown("""
-    <div class="sb-pills">
+    st.markdown("""<div class="sb-pills">
       <span class="sb-pill pill-ibm">IBM Granite</span>
       <span class="sb-pill pill-gem">Gemini Embed</span>
-      <span class="sb-pill pill-groq">Groq Fallback</span>
+      <span class="sb-pill pill-groq">Groq Llama</span>
       <span class="sb-pill pill-crag">CRAG</span>
       <span class="sb-pill pill-chroma">ChromaDB</span>
     </div>""", unsafe_allow_html=True)
-
-    # Settings toggles
     st.markdown('<div class="panel-lbl">Settings</div>', unsafe_allow_html=True)
     sc1, sc2 = st.columns(2)
     with sc1:
         st.session_state["translate_lang"] = st.radio(
-        "🔤 Translation",
-        options=["none", "marathi", "hindi"],
-        format_func=lambda x: {
-            "none": "Off",
-            "marathi": "Marathi",
-            "hindi": "Hindi",
-        }[x],
-        horizontal=True,
-        key="panel_translate",
-    )
+            "🔤 Translation", options=["none", "marathi", "hindi"],
+            format_func=lambda x: {"none":"Off","marathi":"Marathi","hindi":"Hindi"}[x],
+            horizontal=True, key="panel_translate",
+        )
     with sc2:
         new_pp = st.toggle("🔬 Pipeline Trace",
-                           value=st.session_state.get("show_pipeline", False),
-                           key="panel_pp")
+                           value=st.session_state.get("show_pipeline", False), key="panel_pp")
         if new_pp != st.session_state.get("show_pipeline", False):
             st.session_state["show_pipeline"] = new_pp
             st.rerun()
-
-    # Crawl
     try:
         from crawler import trigger_crawl_now
         if st.button("🔄 Crawl Sources", use_container_width=True, key="panel_crawl"):
@@ -336,8 +305,6 @@ if st.session_state.get("show_panel", False):
             st.rerun()
     except Exception:
         pass
-
-    # History
     st.markdown('<div class="panel-lbl">Chat History</div>', unsafe_allow_html=True)
     if not sessions:
         st.markdown('<div style="font-size:12px;color:#3f3f46;padding:4px 0 8px;">No chats yet.</div>',
@@ -350,8 +317,7 @@ if st.session_state.get("show_panel", False):
                 td  = sess.title[:50] + "…" if len(sess.title) > 50 else sess.title
                 cls = "hist-item active" if active else "hist-item"
                 st.markdown(f'<div class="{cls}"><div class="hist-dot"></div>'
-                            f'<span class="hist-text">{td}</span></div>',
-                            unsafe_allow_html=True)
+                            f'<span class="hist-text">{td}</span></div>', unsafe_allow_html=True)
                 if st.button("↩ Load", key=f"ph_{sess.id}", use_container_width=True):
                     switch_session(sess.id)
                     st.session_state["chat_sessions_cache"] = None
@@ -364,8 +330,6 @@ if st.session_state.get("show_panel", False):
                         start_new_chat(user.user_id)
                     st.session_state["chat_sessions_cache"] = None
                     st.rerun()
-
-    # Logout
     st.markdown("<hr>", unsafe_allow_html=True)
     lo1, lo2 = st.columns([3, 1])
     with lo1:
@@ -378,12 +342,14 @@ if st.session_state.get("show_panel", False):
         if st.button("Sign out", key="panel_logout"):
             logout()
             st.rerun()
-
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════
 # RENDER HELPERS
 # ══════════════════════════════════════════════════════
+META_PREFIX   = "<<<META>>>"
+STATUS_PREFIX = "<<<STATUS>>>"
+
 def _conf_banner(label: str, score: float, model: str) -> str:
     pct = int(score * 100)
     model_tag = (f'<span style="font-size:10px;color:#3f3f46;'
@@ -467,7 +433,7 @@ def _render_pipeline(metadata: dict[str, Any]) -> None:
 
 def _render_chart(metadata: dict[str, Any]) -> None:
     docs = metadata.get("citations",{}).get("documents",[])
-    if len(docs)<2: return
+    if len(docs) < 2: return
     with st.expander("📊 Relevance scores", expanded=False):
         names  = [f"DOC {d['index']}: {d['source'][:22]}…" if len(d['source'])>22
                   else f"DOC {d['index']}: {d['source']}" for d in docs]
@@ -485,61 +451,137 @@ def _render_chart(metadata: dict[str, Any]) -> None:
 
 
 def render_message(role: str, content: str, metadata: dict[str, Any]) -> None:
-    if role=="user":
+    """Render a completed message from history."""
+    if role == "user":
         st.markdown(f'<div class="msg-user-wrap"><div class="msg-user">{content}</div></div>',
-                    unsafe_allow_html=True); return
+                    unsafe_allow_html=True)
+        return
     conf_label = metadata.get("confidence_label","")
-    conf_score = metadata.get("confidence_score",0.0)
+    conf_score = metadata.get("confidence_score", 0.0)
     model_used = metadata.get("model_used","")
     if conf_label:
-        st.markdown(_conf_banner(conf_label,conf_score,model_used), unsafe_allow_html=True)
+        st.markdown(_conf_banner(conf_label, conf_score, model_used), unsafe_allow_html=True)
     model_html = "" if not model_used else f'<span class="msg-ai-model">{model_used}</span>'
     st.markdown(f'<div class="msg-ai-header"><div class="msg-ai-avatar">🏛️</div>'
                 f'<span class="msg-ai-name">HTE Assistant</span>{model_html}</div>',
                 unsafe_allow_html=True)
-    st.markdown('<div class="msg-ai-body">', unsafe_allow_html=True)
     st.markdown(content)
-    st.markdown("</div>", unsafe_allow_html=True)
     src = _sources_html(metadata)
-    if src: st.markdown(src, unsafe_allow_html=True)
+    if src:
+        st.markdown(src, unsafe_allow_html=True)
     if metadata.get("translation_applied") and metadata.get("translated_answer"):
-        lang = st.session_state.get("translate_lang", "none")
-    
-        if lang == "hindi":
-            heading = "🔤 हिंदी अनुवाद"
-        elif lang == "marathi":
-            heading = "🔤 मराठी अनुवाद"
-        else:
-            heading = "🔤 Translation"
-    
-        st.markdown(
-            f"""
-            <div class="marathi-box">
-                <div style="
-                    font-size:11px;
-                    font-weight:700;
-                    letter-spacing:1px;
-                    color:#34d399;
-                    text-transform:uppercase;
-                    margin-bottom:10px;">
-                    {heading}
-                </div>
-                {metadata["translated_answer"]}
-            </div>
-            """,
+        lang = metadata.get("lang_out", "marathi")
+        heading = "🔤 हिंदी अनुवाद" if lang == "hindi" else "🔤 मराठी अनुवाद"
+        st.markdown(f'<div class="marathi-box">'
+                    f'<div style="font-size:11px;font-weight:700;letter-spacing:1px;'
+                    f'color:#34d399;text-transform:uppercase;margin-bottom:10px;">{heading}</div>'
+                    f'{metadata["translated_answer"]}</div>', unsafe_allow_html=True)
+    if st.session_state.get("show_pipeline", False):
+        _render_pipeline(metadata)
+        _render_chart(metadata)
+    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════
+# CORE STREAMING FUNCTION
+# This is the key function — uses st.write_stream for
+# real character-by-character streaming output
+# ══════════════════════════════════════════════════════
+
+def _stream_and_collect(user_query: str, lang_out: str) -> tuple[str, dict[str, Any]]:
+    """
+    Drives stream_crag_pipeline and returns (full_answer, meta).
+
+    Architecture:
+      1. STATUS tokens → update a spinner placeholder
+      2. Answer tokens → fed into st.write_stream (real streaming!)
+      3. META token    → parse metadata, stop
+
+    st.write_stream renders tokens as they arrive — true streaming.
+    """
+    collected_meta: dict[str, Any] = {}
+    answer_tokens:  list[str]      = []
+    status_ph = st.empty()
+
+    def _spinner(msg: str) -> None:
+        status_ph.markdown(
+            f'<div class="status-box">'
+            f'<div class="status-spinner"></div>'
+            f'<span class="status-msg">{msg}</span>'
+            f'</div>',
             unsafe_allow_html=True,
         )
-        if st.session_state.get("show_pipeline", False):
-            _render_pipeline(metadata)
-            _render_chart(metadata)
-        
-        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+    _spinner("Generating semantic embeddings…")
+
+    # ── Generator that yields ONLY answer tokens to st.write_stream ──────
+    # STATUS and META tokens are intercepted here; only clean text passes through.
+    def _answer_generator():
+        nonlocal collected_meta
+        pipeline = stream_crag_pipeline(user_query, language_out=lang_out)
+        first_answer_token = True
+
+        for raw in pipeline:
+            stripped = raw.strip()
+
+            # META sentinel — always last token
+            if META_PREFIX in raw:
+                before, _, after = raw.partition(META_PREFIX)
+                before = before.strip()
+                if before:
+                    answer_tokens.append(before)
+                    yield before
+                try:
+                    collected_meta.update(json.loads(after.strip()))
+                except Exception as exc:
+                    logger.error("META parse error: %s", exc)
+                return  # stop generator
+
+            # STATUS token — update spinner, don't yield to write_stream
+            if stripped.startswith(STATUS_PREFIX):
+                try:
+                    data = json.loads(stripped[len(STATUS_PREFIX):])
+                    _spinner(data.get("msg", "Working…"))
+                except Exception:
+                    pass
+                continue
+
+            # Real answer token — clear spinner on first one, then stream
+            if first_answer_token:
+                first_answer_token = False
+                status_ph.empty()   # remove spinner the moment text starts
+
+            answer_tokens.append(raw)
+            yield raw  # ← this is what st.write_stream renders in real time
+
+    # ── st.write_stream: renders tokens as they arrive ───────────────────
+    # Shows the AI avatar header first, then streams text below it
+    st.markdown(
+        '<div class="msg-ai-header">'
+        '<div class="msg-ai-avatar">🏛️</div>'
+        '<span class="msg-ai-name">HTE Assistant</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    try:
+        # This is the magic line — streams tokens into the UI in real time
+        st.write_stream(_answer_generator())
+    except Exception as exc:
+        status_ph.empty()
+        error_msg = f"⚠️ Error: {exc}"
+        st.markdown(error_msg)
+        answer_tokens = [error_msg]
+
+    status_ph.empty()
+    full_answer = "".join(answer_tokens).strip()
+    return full_answer, collected_meta
 
 
 # ══════════════════════════════════════════════════════
-# CHAT AREA
+# CHAT AREA — render history
 # ══════════════════════════════════════════════════════
-messages = st.session_state.get("messages",[])
+messages = st.session_state.get("messages", [])
 
 DEFAULT_QUERIES = [
     {"icon":"💰","text":"What is the fee structure for diploma engineering colleges in Maharashtra?"},
@@ -554,7 +596,7 @@ DEFAULT_QUERIES = [
 
 if messages:
     for msg in messages:
-        render_message(msg["role"], msg["content"], msg.get("metadata",{}))
+        render_message(msg["role"], msg["content"], msg.get("metadata", {}))
 else:
     st.markdown("""
     <div class="welcome-wrap">
@@ -566,10 +608,10 @@ else:
       </div>
       <div class="chips-label">Popular Questions</div>
     </div>""", unsafe_allow_html=True)
-    col_pairs = [DEFAULT_QUERIES[i:i+2] for i in range(0,len(DEFAULT_QUERIES),2)]
+    col_pairs = [DEFAULT_QUERIES[i:i+2] for i in range(0, len(DEFAULT_QUERIES), 2)]
     for pair in col_pairs:
         cols = st.columns(2)
-        for ci,q in enumerate(pair):
+        for ci, q in enumerate(pair):
             with cols[ci]:
                 label = f"{q['icon']}  {q['text'][:56]}{'…' if len(q['text'])>56 else ''}"
                 if st.button(label, key=f"chip_{q['text'][:22]}", use_container_width=True):
@@ -579,131 +621,98 @@ else:
 # ══════════════════════════════════════════════════════
 # INPUT BAR
 # ══════════════════════════════════════════════════════
-prefill = st.session_state.get("pending_query","") or ""
-if prefill: st.session_state["pending_query"] = ""
+prefill = st.session_state.get("pending_query", "") or ""
+if prefill:
+    st.session_state["pending_query"] = ""
+
 st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-cq,cb = st.columns([8,1])
+cq, cb = st.columns([8, 1])
 with cq:
-    query = st.text_area("q", value=prefill,
-                         placeholder="Ask about admissions, fees, scholarships, circulars…",
-                         height=76, key="query_input", label_visibility="collapsed")
+    query = st.text_area(
+        "q", value=prefill,
+        placeholder="Ask about admissions, fees, scholarships, circulars…",
+        height=76, key="query_input", label_visibility="collapsed",
+    )
 with cb:
     st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
     ask_btn = st.button("Ask →", type="primary", use_container_width=True, key="ask_btn")
 
 # ══════════════════════════════════════════════════════
-# STREAMING
+# SUBMIT — stream response
 # ══════════════════════════════════════════════════════
-META_PREFIX   = "<<<META>>>"
-STATUS_PREFIX = "<<<STATUS>>>"
+if ask_btn and query.strip():
+    user_query = query.strip()
+    lang       = st.session_state.get("translate_lang", "none")
+    lang_out   = lang if lang in ("marathi", "hindi") else "english"
 
-def _parse_stream(user_query: str, lang_out: str):
-    full_answer_parts: list[str] = []
-    meta: dict[str, Any] = {}
-    status_ph = st.empty()
+    # Show user bubble
+    st.markdown(
+        f'<div class="msg-user-wrap"><div class="msg-user">{user_query}</div></div>',
+        unsafe_allow_html=True,
+    )
 
-    def _show_status(msg: str) -> None:
-        status_ph.markdown(
-            f'<div class="loading-wrap"><div class="loading-row">'
-            f'<span class="spinner"></span>'
-            f'<span class="loading-msg">{msg}</span></div></div>',
+    # ── Stream the answer ─────────────────────────────────────────────────
+    answer, meta = _stream_and_collect(user_query, lang_out)
+
+    # ── Confidence banner (shown after streaming completes) ───────────────
+    conf_label = meta.get("confidence_label", "")
+    conf_score = meta.get("confidence_score", 0.0)
+    model_used = meta.get("model_used", "")
+    if conf_label:
+        st.markdown(_conf_banner(conf_label, conf_score, model_used), unsafe_allow_html=True)
+
+    # ── Sources ───────────────────────────────────────────────────────────
+    citations = meta.get("citations", {"documents": [], "web": []})
+    src_html  = _sources_html({"citations": citations})
+    if src_html:
+        st.markdown(src_html, unsafe_allow_html=True)
+
+    # ── Translation ───────────────────────────────────────────────────────
+    translated_answer   = ""
+    translation_applied = False
+    if lang_out in ("marathi", "hindi") and answer:
+        try:
+            translated_answer   = (translate_to_marathi(answer) if lang_out == "marathi"
+                                   else translate_to_hindi(answer))
+            translation_applied = bool(translated_answer and translated_answer != answer)
+        except Exception:
+            pass
+    if translation_applied:
+        heading = "🔤 हिंदी अनुवाद" if lang_out == "hindi" else "🔤 मराठी अनुवाद"
+        st.markdown(
+            f'<div class="marathi-box">'
+            f'<div style="font-size:11px;font-weight:700;letter-spacing:1px;'
+            f'color:#34d399;text-transform:uppercase;margin-bottom:10px;">{heading}</div>'
+            f'{translated_answer}</div>',
             unsafe_allow_html=True,
         )
 
-    _show_status("Generating semantic embeddings…")
+    # ── Pipeline trace (if enabled) ───────────────────────────────────────
+    if st.session_state.get("show_pipeline", False):
+        _render_pipeline({"pipeline_trace": meta.get("pipeline_trace", {}),
+                          "retrieval_s":    meta.get("retrieval_s")})
+        _render_chart({"citations": citations})
 
-    # ── Phase 1: consume STATUS tokens until first answer token ──────────
-    stream = stream_crag_pipeline(user_query, language_out=lang_out)
-    answer_started = False
-    pre_tokens: list[str] = []   # buffer tokens before we know streaming has started
-
-    try:
-        for raw_token in stream:
-            stripped = raw_token.strip()
-
-            # META sentinel — parse and stop
-            if META_PREFIX in raw_token:
-                before, _, after = raw_token.partition(META_PREFIX)
-                before = before.strip()
-                if before:
-                    full_answer_parts.append(before)
-                try:
-                    meta = json.loads(after.strip())
-                except Exception as exc:
-                    logger.error("META parse error: %s", exc)
-                break   # META always comes last
-
-            # STATUS tokens — update spinner
-            if stripped.startswith(STATUS_PREFIX):
-                try:
-                    data = json.loads(stripped[len(STATUS_PREFIX):])
-                    if not answer_started:
-                        _show_status(data.get("msg", "Working…"))
-                except Exception:
-                    pass
-                continue
-
-            # First real answer token — clear spinner, start streaming display
-            if not answer_started:
-                answer_started = True
-                status_ph.empty()
-
-            full_answer_parts.append(raw_token)
-
-    except Exception as exc:
-        status_ph.empty()
-        full_answer_parts = [f"⚠️ Pipeline error: {exc}"]
-
-    status_ph.empty()
-    return "".join(full_answer_parts).strip(), meta
-
-if ask_btn and query.strip():
-    user_query = query.strip()
-    st.markdown(f'<div class="msg-user-wrap"><div class="msg-user">{user_query}</div></div>',
-                unsafe_allow_html=True)
-    lang = st.session_state.get("translate_lang", "none")
-
-    if lang == "marathi":
-        lang_out = "marathi"
-    elif lang == "hindi":
-        lang_out = "hindi"
-    else:
-        lang_out = "english"
-    answer, meta = _parse_stream(user_query, lang_out)
-    translated_answer = ""
-    translation_applied = False
-
-    lang = st.session_state.get("translate_lang", "none")
-
-    if answer:
-        try:
-            if lang == "marathi":
-                translated_answer = translate_to_marathi(answer)
-    
-            elif lang == "hindi":
-                translated_answer = translate_to_hindi(answer)
-    
-            translation_applied = bool(
-                translated_answer and translated_answer != answer
-            )
-    
-        except Exception:
-            pass
-    msg_meta: dict[str,Any] = {
-        "confidence_label":    meta.get("confidence_label",""),
-        "confidence_score":    meta.get("confidence_score",0.0),
-        "model_used":          meta.get("model_used",""),
+    # ── Build metadata for history ────────────────────────────────────────
+    msg_meta: dict[str, Any] = {
+        "confidence_label":    conf_label,
+        "confidence_score":    conf_score,
+        "model_used":          model_used,
         "translation_applied": translation_applied,
         "translated_answer":   translated_answer,
-        "citations":           meta.get("citations",{"documents":[],"web":[]}),
-        "pipeline_trace":      meta.get("pipeline_trace",{}),
+        "lang_out":            lang_out,
+        "citations":           citations,
+        "pipeline_trace":      meta.get("pipeline_trace", {}),
         "retrieval_s":         meta.get("retrieval_s"),
     }
-    render_message("assistant", answer, msg_meta)
-    st.session_state["messages"].append({"role":"user","content":user_query,"metadata":{}})
-    st.session_state["messages"].append({"role":"assistant","content":answer,"metadata":msg_meta})
+
+    # ── Persist ───────────────────────────────────────────────────────────
+    st.session_state["messages"].append({"role": "user",      "content": user_query, "metadata": {}})
+    st.session_state["messages"].append({"role": "assistant", "content": answer,     "metadata": msg_meta})
     sid = ensure_active_session(user.user_id)
-    save_turn(session_id=sid, user_query=user_query, assistant_answer=answer, metadata=msg_meta)
+    save_turn(session_id=sid, user_query=user_query,
+              assistant_answer=answer, metadata=msg_meta)
     st.session_state["chat_sessions_cache"] = None
+
 elif ask_btn and not query.strip():
     st.warning("Please enter a question before clicking Ask.")
