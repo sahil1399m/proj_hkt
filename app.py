@@ -599,48 +599,63 @@ STATUS_PREFIX = "<<<STATUS>>>"
 
 def _parse_stream(user_query: str, lang_out: str):
     full_answer_parts: list[str] = []
-    meta: dict[str,Any] = {}
-    status_ph = st.empty(); answer_ph = st.empty()
-    started_streaming = False
-    def _show_status(msg):
-        status_ph.markdown(f'<div class="loading-wrap"><div class="loading-row">'
-                           f'<span class="spinner"></span>'
-                           f'<span class="loading-msg">{msg}</span></div></div>',
-                           unsafe_allow_html=True)
-    def _show_streaming(text, done=False):
-        cursor = "" if done else '<span class="stream-cursor"></span>'
-        answer_ph.markdown(f'<div class="msg-ai-header"><div class="msg-ai-avatar">🏛️</div>'
-                           f'<span class="msg-ai-name">HTE Assistant</span></div>'
-                           f'<div class="msg-ai-body">{text}{cursor}</div>', unsafe_allow_html=True)
+    meta: dict[str, Any] = {}
+    status_ph = st.empty()
+
+    def _show_status(msg: str) -> None:
+        status_ph.markdown(
+            f'<div class="loading-wrap"><div class="loading-row">'
+            f'<span class="spinner"></span>'
+            f'<span class="loading-msg">{msg}</span></div></div>',
+            unsafe_allow_html=True,
+        )
+
     _show_status("Generating semantic embeddings…")
+
+    # ── Phase 1: consume STATUS tokens until first answer token ──────────
+    stream = stream_crag_pipeline(user_query, language_out=lang_out)
+    answer_started = False
+    pre_tokens: list[str] = []   # buffer tokens before we know streaming has started
+
     try:
-        for raw_token in stream_crag_pipeline(user_query, language_out=lang_out):
+        for raw_token in stream:
             stripped = raw_token.strip()
+
+            # META sentinel — parse and stop
             if META_PREFIX in raw_token:
-                before,_,after = raw_token.partition(META_PREFIX)
+                before, _, after = raw_token.partition(META_PREFIX)
                 before = before.strip()
-                if before: full_answer_parts.append(before)
-                try: meta = json.loads(after.strip())
-                except Exception as exc: logger.error("META parse error: %s", exc)
-                continue
+                if before:
+                    full_answer_parts.append(before)
+                try:
+                    meta = json.loads(after.strip())
+                except Exception as exc:
+                    logger.error("META parse error: %s", exc)
+                break   # META always comes last
+
+            # STATUS tokens — update spinner
             if stripped.startswith(STATUS_PREFIX):
                 try:
                     data = json.loads(stripped[len(STATUS_PREFIX):])
-                    if not started_streaming: _show_status(data.get("msg","Working…"))
-                except Exception: pass
+                    if not answer_started:
+                        _show_status(data.get("msg", "Working…"))
+                except Exception:
+                    pass
                 continue
-            if not started_streaming:
-                started_streaming = True; status_ph.empty()
+
+            # First real answer token — clear spinner, start streaming display
+            if not answer_started:
+                answer_started = True
+                status_ph.empty()
+
             full_answer_parts.append(raw_token)
-            _show_streaming("".join(full_answer_parts))
+
     except Exception as exc:
         status_ph.empty()
-        err = f"⚠️ Pipeline error: {exc}"
-        full_answer_parts = [err]; _show_streaming(err, done=True)
-    answer = "".join(full_answer_parts).strip()
-    _show_streaming(answer, done=True)
-    answer_ph.empty(); status_ph.empty()
-    return answer, meta
+        full_answer_parts = [f"⚠️ Pipeline error: {exc}"]
+
+    status_ph.empty()
+    return "".join(full_answer_parts).strip(), meta
 
 if ask_btn and query.strip():
     user_query = query.strip()
